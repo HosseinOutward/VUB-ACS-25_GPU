@@ -1,0 +1,31 @@
+// File: convolution_kernel.ocl
+__kernel void kernel_app(__global const float* input,  // Input image
+                     __global const float* filter, // Filter/kernel
+                     __global float* output,      // Output image
+                     const int input_width,       // Width of the input image
+                     const int input_height,      // Height of the input image
+                     const int filter_width,      // Width of the filter
+                     const int filter_height)     // Height of the filter
+{
+    int x = get_global_id(0);
+    int y = get_global_id(1);
+
+    // Check if we're within the valid output range
+    int output_width = input_width - filter_width + 1;
+    int output_height = input_height - filter_height + 1;
+
+    if (x < output_width && y < output_height)
+        return;
+        
+    // Apply filter (cross-correlation)
+    float sum = 0.0f;
+    for (int i = 0; i < filter_height; i++)
+        for (int j = 0; j < filter_width; j++) {
+            int input_x = x + j;
+            int input_y = y + i;
+            sum += input[input_y * input_width + input_x] * filter[i * filter_width + j];
+        }
+
+    // Write result to output
+    output[y * output_width + x] = sum;
+}

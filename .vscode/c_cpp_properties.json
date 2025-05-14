@@ -1,0 +1,18 @@
+{
+  "configurations": [
+    {
+      "name": "gpu code config",
+      "compilerPath": "D:/User/Software/Cpp_files/mingw-llvm/bin/clang++.exe",
+      "intelliSenseMode": "windows-clang-x64",
+      "includePath": [
+        "${workspaceFolder}",
+        "${workspaceFolder}/include",
+        "D:/User/Software/Nvidia/CUDA/1211/include"
+      ],
+      "defines": ["_WIN64"],
+      "cStandard": "c17",
+      "cppStandard": "c++17"
+    }
+  ],
+  "version": 4
+}
