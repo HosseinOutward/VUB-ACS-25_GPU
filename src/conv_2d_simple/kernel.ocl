@@ -1,11 +1,14 @@
 // File: convolution_kernel.ocl
-__kernel void kernel_app(__global const float* input,  // Input image
-                     __global const float* filter, // Filter/kernel
-                     __global float* output,      // Output image
-                     const int input_width,       // Width of the input image
-                     const int input_height,      // Height of the input image
-                     const int filter_width,      // Width of the filter
-                     const int filter_height)     // Height of the filter
+__kernel void kernel_app(
+    __global const float* input,
+    __global const float* filter,
+    __global float* output,   
+    const int input_width,    
+    const int input_height,   
+    const int filter_width,   
+    const int filter_height,
+    const int stride
+)
 {
     int x = get_global_id(0);
     int y = get_global_id(1);

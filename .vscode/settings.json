@@ -44,6 +44,7 @@
         "bitset": "cpp",
         "iomanip": "cpp",
         "print": "cpp",
-        "sstream": "cpp"
+        "sstream": "cpp",
+        "conv_2d_simple": "cpp"
     }
 }
