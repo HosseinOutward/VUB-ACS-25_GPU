@@ -17,12 +17,8 @@ void conv2d_cpu_threaded(const float* in, int in_w, int in_h, int channel_count,
     const int out_channel_size = out_w * out_h;
 
     if (out_w <= 0 || out_h <= 0) {
-        // This can happen if the filter is larger than the input with the given stride.
-        // Or if (in_w - filt_w) is negative.
         std::cerr << "Warning: Output dimensions are non-positive (out_w: " << out_w << ", out_h: " << out_h 
                   << "). No output will be generated." << std::endl;
-        // Depending on desired behavior, you might want to return or throw an error.
-        // For now, if out_w or out_h is zero or negative, the loops below won't execute, effectively producing no output.
         return; 
     }
 
@@ -37,13 +33,13 @@ void conv2d_cpu_threaded(const float* in, int in_w, int in_h, int channel_count,
         const float* current_in_channel = in + channel * in_channel_size;
         float* current_out_channel = out + channel * out_channel_size;
 
-        for (int y = y_begin; y < y_end; ++y) // y iterates over output rows
+        for (int y = y_begin; y < y_end; ++y)
             for (int x = 0; x < out_w; ++x) {
                 float sum = 0.f;
                 for (int fy = 0; fy < filt_h; ++fy) {
-                    const int iy = y * stride + fy; // Input y-coordinate, account for stride
+                    const int iy = y * stride + fy; 
                     for (int fx = 0; fx < filt_w; ++fx) {
-                        const int ix = x * stride + fx; // Input x-coordinate, account for stride
+                        const int ix = x * stride + fx;
                         if (!(iy < in_h && ix < in_w))
                             throw std::out_of_range("Input coordinates out of bounds: (" + std::to_string(iy) + ", " + std::to_string(ix) + ")");
 

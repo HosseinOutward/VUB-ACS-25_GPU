@@ -18,18 +18,16 @@ int main()
     FilePaths paths = loadPathsFromConfig("data/in/config_conv.txt");
 
     int input_width, input_height, channel_count;
-    // std::vector<float> input_img = readPngImage("data/in/input_5x5.png", input_width, input_height, channel_count);
     std::vector<float> input_img = readPngImage(paths.inputImagePath, input_width, input_height, channel_count);
 
     // Filter
     int filter_width, filter_height;
-    // std::vector<float> filter = loadConvKernelFromFile("data/in/kernel_same.txt", filter_height, filter_width);
     std::vector<float> filter = loadConvKernelFromFile(paths.kernelFilePath, filter_height, filter_width);
 
     int stride = 1; // Stride for convolution
     const int output_width = (input_width - filter_width) / stride + 1;
     const int output_height = (input_height - filter_height) / stride + 1;
-    std::vector<float> output(static_cast<size_t>(output_width) * output_height * channel_count); // Correctly sized for multi-channel output
+    std::vector<float> output(static_cast<size_t>(output_width) * output_height * channel_count); 
 
     // ------------------ choose thread count ------------------
     int threads = 0; // Changed from 12 to 0 to use hardware_concurrency()
@@ -44,5 +42,5 @@ int main()
     std::cout << "finished conv2d_cpu_threaded\n";
 
     // ------------------ result -------------------------
-    writePngImage(output, output_width, output_height, channel_count, paths.outputImagePath); // Write the actual output data
+    writePngImage(output, output_width, output_height, channel_count, paths.outputImagePath); 
 }

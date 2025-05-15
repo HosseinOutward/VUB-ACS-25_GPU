@@ -13,9 +13,6 @@
 #include <stb_image_write.h>
 
 
-// Function to load a kernel from a text file
-// First line: kernel_height kernel_width
-// Subsequent lines: kernel values (row major)
 std::vector<float> loadConvKernelFromFile(const std::string& filename, int& kernel_height, int& kernel_width) {
     std::ifstream kernelFile(filename);
     if (!kernelFile) {
@@ -71,7 +68,7 @@ std::vector<float> readPngImage(const std::string& filename, int& w_int, int& h_
 
     stbi_image_free(raw_data); // Free the memory allocated by stbi_load
 
-    std::cout << "Image loaded from " << filename << " (" << w_int <<
+    std::cout << "Image loaded from " << filename << " (" << w_int << 
             "x" << h_int << ", " << processed_channels << 
             " processed channels from " << c_int_out << " original channels)" << std::endl;
 
@@ -130,15 +127,17 @@ void writePngImage(const std::vector<float>& data, uint32_t width, uint32_t heig
     if (!success)
         throw std::runtime_error("Failed to write PNG image: " + filename);
 
-    std::cout << "Image successfully written to " << filename << " (" << width <<
+    std::cout << "Image successfully written to " << filename << " (" << width << 
             "x" << height << ", " << channels << " channels)" << std::endl;
 }
+
 
 struct FilePaths {
     std::string inputImagePath;
     std::string kernelFilePath;
     std::string outputImagePath;
 };
+
 FilePaths loadPathsFromConfig(const std::string& configFilePath) {
     std::ifstream configFile(configFilePath);
     if (!configFile) {
@@ -161,7 +160,6 @@ FilePaths loadPathsFromConfig(const std::string& configFilePath) {
         throw std::runtime_error("One or more paths in the config file are empty: " + configFilePath);
     }
     
-    // For debugging purposes:
     // std::cout << "Loaded Input Image Path: " << paths.inputImagePath << std::endl;
     // std::cout << "Loaded Kernel File Path: " << paths.kernelFilePath << std::endl;
     // std::cout << "Loaded Output Image Path: " << paths.outputImagePath << std::endl;

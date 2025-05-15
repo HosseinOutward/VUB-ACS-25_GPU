@@ -12,7 +12,6 @@
 #include "..\conv_2d_sequential\utilities.cpp"
 
 // Define local work-group size (e.g., 16x16)
-// These could be tuned for performance based on the device
 const size_t local_wg_dim_x = 16;
 const size_t local_wg_dim_y = 16;
 
@@ -29,10 +28,10 @@ int main()
     int filter_width, filter_height;
     std::vector<float> filter = loadConvKernelFromFile(paths.kernelFilePath, filter_height, filter_width);
 
-    int stride = 1; // Stride for convolution
+    int stride = 1;
     const int output_width = (input_width - filter_width) / stride + 1;
     const int output_height = (input_height - filter_height) / stride + 1;
-    std::vector<float> output(static_cast<size_t>(output_width) * output_height * channel_count); // Correctly sized for multi-channel output
+    std::vector<float> output(static_cast<size_t>(output_width) * output_height * channel_count);
 
     // ------------------ gpu init ------------------
     cl::CommandQueue queue;

@@ -6,5 +6,4 @@ __kernel void kernel_app(
 {
     int out_i = get_global_id(0);
     output[out_i] = (input1[out_i] + input2[out_i])/2.0f;
-    // output[out_i] = input1[out_i];
 }

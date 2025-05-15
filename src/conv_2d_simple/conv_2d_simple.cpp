@@ -18,18 +18,16 @@ int main()
     FilePaths paths = loadPathsFromConfig("data/in/config_conv.txt");
 
     int input_width, input_height, channel_count;
-    // std::vector<float> input_img = readPngImage("data/in/input_5x5.png", input_width, input_height, channel_count);
     std::vector<float> input_img = readPngImage(paths.inputImagePath, input_width, input_height, channel_count);
 
     // Filter
     int filter_width, filter_height;
-    // std::vector<float> filter = loadConvKernelFromFile("data/in/kernel_same.txt", filter_height, filter_width);
     std::vector<float> filter = loadConvKernelFromFile(paths.kernelFilePath, filter_height, filter_width);
 
-    int stride = 1; // Stride for convolution
+    int stride = 1; 
     const int output_width = (input_width - filter_width) / stride + 1;
     const int output_height = (input_height - filter_height) / stride + 1;
-    std::vector<float> output(static_cast<size_t>(output_width) * output_height * channel_count); // Correctly sized for multi-channel output
+    std::vector<float> output(static_cast<size_t>(output_width) * output_height * channel_count); 
 
     // ------------------ gpu init ------------------
     cl::CommandQueue queue;
@@ -50,7 +48,7 @@ int main()
     kernel.setArg(1, d_filter);
     kernel.setArg(2, d_output);
 
-    std::vector<int> other_ints = {stride, input_width, input_height, filter_width, filter_height, channel_count}; // Added channel_count
+    std::vector<int> other_ints = {stride, input_width, input_height, filter_width, filter_height, channel_count}; 
     cl::Buffer d_other_ints(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
                         sizeof(int) * other_ints.size(), other_ints.data());
     kernel.setArg(3, d_other_ints);
@@ -64,5 +62,5 @@ int main()
     std::cout << "finished reading output off vram\n";
 
     // ------------------ result -------------------------
-    writePngImage(output, output_width, output_height, channel_count, paths.outputImagePath); // Write the actual output data
+    writePngImage(output, output_width, output_height, channel_count, paths.outputImagePath);
 }

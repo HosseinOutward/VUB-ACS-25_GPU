@@ -31,14 +31,12 @@ __kernel void kernel_app(
             for (int fx = 0; fx < filter_width; fx++) {
                 int in_x = out_x * stride + fx;
                 int in_y = out_y * stride + fy;
-                // Corrected input index for channel-major data (channel * plane_size + offset_in_plane)
                 int input_idx = (channel * input_height * input_width) + (in_y * input_width + in_x);
                 int filter_idx = fy * filter_width + fx;
                 sum += input[input_idx] * filter[filter_idx];
             }
         
         // Write result to output, considering channels
-        // Corrected output index for channel-major data (channel * plane_size + offset_in_plane)
         int output_idx = (channel * output_height * output_width) + (out_y * output_width + out_x);
         output[output_idx] = sum;
     }
