@@ -2,17 +2,19 @@ __kernel void kernel_app(
     __global const float* input_img,
     __global const float* filter_k,
     __global float* output_img,
-    __global const int* params,
+    const int stride,
+    const int input_w,
+    const int input_h,
+    const int filter_w,
+    const int filter_h,
+    const int channels,
+    const int tile_w,
+    const int tile_h,
+    const int output_w,
+    const int output_h,
     __local float* input_tile
 )
 {
-    int stride = params[0];
-    int input_w = params[1];
-    int input_h = params[2];
-    int filter_w = params[3];
-    int filter_h = params[4];
-    int channels = params[5];
-
     // Global and local IDs
     int lix = get_local_id(0);
     int liy = get_local_id(1);
@@ -20,10 +22,7 @@ __kernel void kernel_app(
     int giy = get_global_id(1);
     int ch = get_global_id(2);
 
-    // Dimensions of the local input tile needed by this work-group
-    int tile_w = (get_local_size(0) - 1) * stride + filter_w;
-    int tile_h = (get_local_size(1) - 1) * stride + filter_h;
-
+    // __________________ load data to local memory __________________
     // Top-left global input coordinates for this work-group's tile
     int group_input_start_x = get_group_id(0) * get_local_size(0) * stride;
     int group_input_start_y = get_group_id(1) * get_local_size(1) * stride;
@@ -45,12 +44,9 @@ __kernel void kernel_app(
         }
     }
 
-    barrier(CLK_LOCAL_MEM_FENCE);
+    barrier(CLK_LOCAL_MEM_FENCE); // Synchronize work-items in the group
 
-    // Output dimensions
-    int output_w = (input_w - filter_w) / stride + 1;
-    int output_h = (input_h - filter_h) / stride + 1;
-
+    // __________________ conv cal __________________
     // Check if current global work-item is within output image bounds
     if (gix < output_w && giy < output_h && ch < channels) {
         float sum = 0.0f;
@@ -59,7 +55,7 @@ __kernel void kernel_app(
         int local_conv_start_x = lix * stride;
         int local_conv_start_y = liy * stride;
 
-        // Perform convolution using data from input_tile
+        // Perform convolution using data from the local input_tile
         for (int fy = 0; fy < filter_h; fy++) {
             for (int fx = 0; fx < filter_w; fx++) {
                 int tile_access_x = local_conv_start_x + fx;
@@ -72,7 +68,7 @@ __kernel void kernel_app(
             }
         }
         
-        // Write result to output_img
+        // Write the result to the output image
         int output_idx = (ch * output_h * output_w) + (giy * output_w + gix);
         output_img[output_idx] = sum;
     }

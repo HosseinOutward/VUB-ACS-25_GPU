@@ -10,13 +10,11 @@
 #include <ocl_utilities.hpp>
 #include "..\conv_2d_sequential\function.cpp"
 #include "..\conv_2d_sequential\utilities.cpp"
-
-// Define local work-group size (e.g., 16x16)
-const size_t local_wg_dim_x = 16;
-const size_t local_wg_dim_y = 16;
+#include <cmath> // Required for std::sqrt
 
 int main()
 {
+    try { // Add try block for OpenCL errors
     /*------------------ INPUT ------------------*/
     // Load paths from config file
     FilePaths paths = loadPathsFromConfig("data/in/config_conv.txt");
@@ -42,12 +40,6 @@ int main()
     program.build({device});
     cl::Kernel kernel(program, "kernel_app");
 
-    // Calculate local memory size needed by the kernel for the input tile.
-    // The tile dimensions depend on local work-group size, stride, and filter dimensions.
-    size_t tile_w = (local_wg_dim_x > 0 ? (local_wg_dim_x - 1) : 0) * stride + filter_width;
-    size_t tile_h = (local_wg_dim_y > 0 ? (local_wg_dim_y - 1) : 0) * stride + filter_height;
-    size_t local_memory_size_bytes = tile_w * tile_h * sizeof(float);
-
     cl::Buffer d_input(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
                         sizeof(float) * input_img.size(), input_img.data());
     cl::Buffer d_filter(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
@@ -57,29 +49,81 @@ int main()
     kernel.setArg(0, d_input);
     kernel.setArg(1, d_filter);
     kernel.setArg(2, d_output);
+    kernel.setArg(3, stride);
+    kernel.setArg(4, input_width);
+    kernel.setArg(5, input_height);
+    kernel.setArg(6, filter_width);
+    kernel.setArg(7, filter_height);
+    kernel.setArg(8, channel_count);
+    kernel.setArg(11, output_width);
+    kernel.setArg(12, output_height);
 
-    std::vector<int> other_ints = {stride, input_width, input_height, filter_width, filter_height, channel_count}; // Added channel_count
-    cl::Buffer d_other_ints(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                        sizeof(int) * other_ints.size(), other_ints.data());
-    kernel.setArg(3, d_other_ints); // d_other_ints is now argument 3 (0-indexed)
-    kernel.setArg(4, cl::Local(local_memory_size_bytes)); // New local memory argument is 4
+    // ------------------ query device limits ------------------
+    size_t max_total_wg_size = device.getInfo<CL_DEVICE_MAX_WORK_GROUP_SIZE>();
+    std::vector<size_t> max_item_sizes = device.getInfo<CL_DEVICE_MAX_WORK_ITEM_SIZES>();
+    size_t max_local_mem_size = device.getInfo<CL_DEVICE_LOCAL_MEM_SIZE>();
 
-    // ------------------ run gpu convolution ------------------
-    std::cout << "\nbeginning conv2d\n";
-    // Update NDRange to include channels and specify local work size
-    // Global work size needs to be a multiple of local work size for simplicity, or handle edge cases in kernel.
-    // For now, let's ensure global size is rounded up to be a multiple of local size.
+    // std::cout << "Device Max Work Group Size: " << max_total_wg_size << std::endl;
+    // std::cout << "Max local memory size: " << max_local_mem_size / 1024 << " KB" << std::endl;
+    // if (max_item_sizes.size() >= 1) std::cout << "Device Max Work Item Sizes[0]: " << max_item_sizes[0] << std::endl;
+    // if (max_item_sizes.size() >= 2) std::cout << "Device Max Work Item Sizes[1]: " << max_item_sizes[1] << std::endl;
+    // if (max_item_sizes.size() >= 3) std::cout << "Device Max Work Item Sizes[2]: " << max_item_sizes[2] << std::endl;
+
+    // ------------------ local memory and worker config ------------------
+    // ------------ calculate optimal workgroup size
+    std::vector<float> quads = {1.0f, 1.0f*stride*(filter_width+filter_height), 
+        1.0f*(filter_width*filter_height) - (1.0f*max_local_mem_size)/sizeof(float)};
+    double discriminant = static_cast<double>(quads[1])*quads[1] - 4.0*quads[0]*quads[2];
+    int optimal_wg_size = 1 + static_cast<int>(
+        (-quads[1] + std::sqrt(discriminant)) / (2.0f * quads[0]));
+
+    std::cout << "Calculated optimal_wg_size (complete coverage local mem): " << optimal_wg_size << std::endl;
+    optimal_wg_size = std::min(optimal_wg_size, static_cast<int>(max_item_sizes[0]));
+    std::cout << "Calculated optimal_wg_size (considering max #worker): " << optimal_wg_size << std::endl;
+    optimal_wg_size = std::min(optimal_wg_size, static_cast<int>(
+            std::sqrt(static_cast<double>(max_total_wg_size))));
+    std::cout << "Calculated optimal_wg_size (considering max #wg): " << optimal_wg_size << std::endl;
+
+    const size_t local_wg_dim_x = optimal_wg_size;
+    const size_t local_wg_dim_y = optimal_wg_size;
+
+    // ------------ per group tile dimensions & local memory size
+    size_t tile_w_host = (local_wg_dim_x - 1) * stride + filter_width;
+    size_t tile_h_host = (local_wg_dim_y - 1) * stride + filter_height;
+    size_t local_memory_size_bytes = tile_w_host * tile_h_host * sizeof(float);
+    kernel.setArg(9, static_cast<int>(tile_w_host));
+    kernel.setArg(10, static_cast<int>(tile_h_host));
+    kernel.setArg(13, cl::Local(local_memory_size_bytes));
+    
+    // ------------ global and local work size
+    cl::NDRange local_dims(local_wg_dim_x, local_wg_dim_y, 1); // worker groups
+
     size_t global_work_size_x = ((output_width + local_wg_dim_x - 1) / local_wg_dim_x) * local_wg_dim_x;
     size_t global_work_size_y = ((output_height + local_wg_dim_y - 1) / local_wg_dim_y) * local_wg_dim_y;
-
     cl::NDRange global_dims(global_work_size_x, global_work_size_y, channel_count);
-    cl::NDRange local_dims(local_wg_dim_x, local_wg_dim_y, 1); // Local work group for 2D patch, channel processed by 3rd global dim
+
+    // ------------------ run gpu convolution ------------------
+    std::cout << "\nbeginning conv2d fast\n";
 
     queue.enqueueNDRangeKernel(kernel, cl::NullRange, global_dims, local_dims);
-    std::cout << "finished conv2d\n";
+    std::cout << "finished conv2d fast\n";
+    
     queue.enqueueReadBuffer(d_output, CL_TRUE, 0, sizeof(float) * output.size(), output.data());
     std::cout << "finished reading output off vram\n";
 
     // ------------------ result -------------------------
-    writePngImage(output, output_width, output_height, channel_count, paths.outputImagePath); // Write the actual output data
+    writePngImage(output, output_width, output_height, channel_count, paths.outputImagePath);
+
+    // ------------------ try catch -------------------------
+    } catch (cl::Error const &e) {
+        std::cerr << "OpenCL Error: " << e.what() << " (" << e.err() << ")" << std::endl;
+        // You can get more specific error codes using e.err()
+        // e.g. CL_INVALID_WORK_GROUP_SIZE, CL_OUT_OF_RESOURCES, etc.
+        // Consult OpenCL documentation for clEnqueueNDRangeKernel error codes.
+        return 1; // Indicate an error
+    } catch (std::exception const &e) {
+        std::cerr << "Standard Exception: " << e.what() << std::endl;
+        return 1;
+    }
+    return 0; // Indicate success
 }
