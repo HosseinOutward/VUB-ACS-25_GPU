@@ -16,18 +16,21 @@ inline cl::Context makeContextAndQueue(cl::CommandQueue* outQueue, cl::Device* o
         throw std::runtime_error("No OpenCL platforms found");
 
     cl::Device device;
+    char dev_name[128];
     for (const auto& plat : platforms)
     {
         std::vector<cl::Device> devices;
         plat.getDevices(CL_DEVICE_TYPE_GPU, &devices);
-        if (!devices.empty())
-        {
+        plat.getInfo(CL_PLATFORM_NAME, &dev_name);
+        if (!devices.empty() && std::string(dev_name).find("NVIDIA") != std::string::npos) {
             device = devices[0];
             break;
         }
     }
     if (!device())
         throw std::runtime_error("No GPU devices found");
+    
+    std::cout << "Using device: " << device.getInfo<CL_DEVICE_NAME>() << std::endl;
 
     cl::Context context({device});
     cl::CommandQueue queue(context, device);
