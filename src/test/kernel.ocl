@@ -1,8 +1,0 @@
-// executes on the GPU
-__kernel void kernel_app(const float a,
-                    __global const float *x,
-                    __global float *y)
-{
-    const size_t i = get_global_id(0);
-    y[i] = a * x[i] + y[i];
-}
