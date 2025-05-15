@@ -14,14 +14,17 @@
 int main()
 {
     /*------------------ INPUT ------------------*/
+    // Load paths from config file
+    FilePaths paths = loadPathsFromConfig("data/in/config_conv.txt");
+
     int input_width, input_height, channel_count;
     // std::vector<float> input_img = readPngImage("data/in/input_5x5.png", input_width, input_height, channel_count);
-    std::vector<float> input_img = readPngImage("data/in/input_lena.png", input_width, input_height, channel_count);
+    std::vector<float> input_img = readPngImage(paths.inputImagePath, input_width, input_height, channel_count);
 
     // Filter
     int filter_width, filter_height;
     // std::vector<float> filter = loadConvKernelFromFile("data/in/kernel_same.txt", filter_height, filter_width);
-    std::vector<float> filter = loadConvKernelFromFile("data/in/kernel_edge.txt", filter_height, filter_width);
+    std::vector<float> filter = loadConvKernelFromFile(paths.kernelFilePath, filter_height, filter_width);
 
     int stride = 1; // Stride for convolution
     const int output_width = (input_width - filter_width) / stride + 1;
@@ -53,13 +56,13 @@ int main()
     kernel.setArg(3, d_other_ints);
 
     // ------------------ run gpu convolution ------------------
-    std::cout << "\nbeginning conv2d_cpu_threaded\n";
+    std::cout << "\nbeginning conv2d\n";
     // Update NDRange to include channels
     queue.enqueueNDRangeKernel(kernel, cl::NullRange, cl::NDRange(output_width, output_height, channel_count));
-    std::cout << "finished conv2d_cpu_threaded\n";
+    std::cout << "finished conv2d\n";
     queue.enqueueReadBuffer(d_output, CL_TRUE, 0, sizeof(float) * output.size(), output.data());
     std::cout << "finished reading output off vram\n";
 
     // ------------------ result -------------------------
-    writePngImage(output, output_width, output_height, channel_count, "data/out/output.png"); // Write the actual output data
+    writePngImage(output, output_width, output_height, channel_count, paths.outputImagePath); // Write the actual output data
 }

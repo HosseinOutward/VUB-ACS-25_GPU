@@ -133,3 +133,39 @@ void writePngImage(const std::vector<float>& data, uint32_t width, uint32_t heig
     std::cout << "Image successfully written to " << filename << " (" << width <<
             "x" << height << ", " << channels << " channels)" << std::endl;
 }
+
+struct FilePaths {
+    std::string inputImagePath;
+    std::string kernelFilePath;
+    std::string outputImagePath;
+};
+FilePaths loadPathsFromConfig(const std::string& configFilePath) {
+    std::ifstream configFile(configFilePath);
+    if (!configFile) {
+        throw std::runtime_error("Failed to open config file: " + configFilePath);
+    }
+
+    FilePaths paths;
+    if (!(std::getline(configFile, paths.inputImagePath))) {
+        throw std::runtime_error("Failed to read input image path from config file: " + configFilePath);
+    }
+    if (!(std::getline(configFile, paths.kernelFilePath))) {
+        throw std::runtime_error("Failed to read kernel file path from config file: " + configFilePath);
+    }
+    if (!(std::getline(configFile, paths.outputImagePath))) {
+        throw std::runtime_error("Failed to read output image path from config file: " + configFilePath);
+    }
+
+    // Basic validation: check if paths are empty
+    if (paths.inputImagePath.empty() || paths.kernelFilePath.empty() || paths.outputImagePath.empty()) {
+        throw std::runtime_error("One or more paths in the config file are empty: " + configFilePath);
+    }
+    
+    // For debugging purposes:
+    // std::cout << "Loaded Input Image Path: " << paths.inputImagePath << std::endl;
+    // std::cout << "Loaded Kernel File Path: " << paths.kernelFilePath << std::endl;
+    // std::cout << "Loaded Output Image Path: " << paths.outputImagePath << std::endl;
+
+    configFile.close();
+    return paths;
+}

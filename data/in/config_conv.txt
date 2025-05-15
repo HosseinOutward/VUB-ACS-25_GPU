@@ -1,0 +1,3 @@
+data/in/input_lena.png
+data/in/kernel_edge.txt
+data/out/output.png
