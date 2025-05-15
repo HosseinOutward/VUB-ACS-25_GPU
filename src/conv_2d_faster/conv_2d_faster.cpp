@@ -62,9 +62,11 @@ int main()
     size_t max_total_wg_size = device.getInfo<CL_DEVICE_MAX_WORK_GROUP_SIZE>();
     std::vector<size_t> max_item_sizes = device.getInfo<CL_DEVICE_MAX_WORK_ITEM_SIZES>();
     size_t max_local_mem_size = device.getInfo<CL_DEVICE_LOCAL_MEM_SIZE>();
+    // size_t max_mem_per_wg = device.getInfo<CL_DEVICE_MAX_MEM_ALLOC_SIZE>();
 
     // std::cout << "Device Max Work Group Size: " << max_total_wg_size << std::endl;
     // std::cout << "Max local memory size: " << max_local_mem_size / 1024 << " KB" << std::endl;
+    // std::cout << "Max local memory per wg: " << max_mem_per_wg / 1024 << " KB" << std::endl;
     // if (max_item_sizes.size() >= 1) std::cout << "Device Max Work Item Sizes[0]: " << max_item_sizes[0] << std::endl;
     // if (max_item_sizes.size() >= 2) std::cout << "Device Max Work Item Sizes[1]: " << max_item_sizes[1] << std::endl;
     // if (max_item_sizes.size() >= 3) std::cout << "Device Max Work Item Sizes[2]: " << max_item_sizes[2] << std::endl;
@@ -77,12 +79,11 @@ int main()
     int optimal_wg_size = 1 + static_cast<int>(
         (-quads[1] + std::sqrt(discriminant)) / (2.0f * quads[0]));
 
-    std::cout << "Calculated optimal_wg_size (complete coverage local mem): " << optimal_wg_size << std::endl;
     optimal_wg_size = std::min(optimal_wg_size, static_cast<int>(max_item_sizes[0]));
-    std::cout << "Calculated optimal_wg_size (considering max #worker): " << optimal_wg_size << std::endl;
     optimal_wg_size = std::min(optimal_wg_size, static_cast<int>(
             std::sqrt(static_cast<double>(max_total_wg_size))));
-    std::cout << "Calculated optimal_wg_size (considering max #wg): " << optimal_wg_size << std::endl;
+    std::cout << "WI per WG: " << optimal_wg_size*optimal_wg_size << std::endl;
+
 
     const size_t local_wg_dim_x = optimal_wg_size;
     const size_t local_wg_dim_y = optimal_wg_size;
@@ -106,6 +107,7 @@ int main()
     std::cout << "\nbeginning conv2d fast\n";
 
     queue.enqueueNDRangeKernel(kernel, cl::NullRange, global_dims, local_dims);
+    
     std::cout << "finished conv2d fast\n";
     
     queue.enqueueReadBuffer(d_output, CL_TRUE, 0, sizeof(float) * output.size(), output.data());
