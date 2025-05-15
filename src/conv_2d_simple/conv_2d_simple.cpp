@@ -20,8 +20,8 @@ int main()
 
     // Filter
     int filter_width, filter_height;
-    std::vector<float> filter = loadConvKernelFromFile("data/in/kernel_same.txt", filter_height, filter_width);
-    // std::vector<float> filter = loadConvKernelFromFile("data/in/kernel_edge.txt", filter_height, filter_width);
+    // std::vector<float> filter = loadConvKernelFromFile("data/in/kernel_same.txt", filter_height, filter_width);
+    std::vector<float> filter = loadConvKernelFromFile("data/in/kernel_edge.txt", filter_height, filter_width);
 
     int stride = 1; // Stride for convolution
     const int output_width = (input_width - filter_width) / stride + 1;
@@ -47,14 +47,15 @@ int main()
     kernel.setArg(1, d_filter);
     kernel.setArg(2, d_output);
 
-    std::vector<int> other_ints = {stride, input_width, input_height, filter_width, filter_height};
+    std::vector<int> other_ints = {stride, input_width, input_height, filter_width, filter_height, channel_count}; // Added channel_count
     cl::Buffer d_other_ints(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
                         sizeof(int) * other_ints.size(), other_ints.data());
     kernel.setArg(3, d_other_ints);
 
     // ------------------ run gpu convolution ------------------
     std::cout << "\nbeginning conv2d_cpu_threaded\n";
-    queue.enqueueNDRangeKernel(kernel, cl::NullRange, cl::NDRange(output_width, output_height));
+    // Update NDRange to include channels
+    queue.enqueueNDRangeKernel(kernel, cl::NullRange, cl::NDRange(output_width, output_height, channel_count));
     std::cout << "finished conv2d_cpu_threaded\n";
     queue.enqueueReadBuffer(d_output, CL_TRUE, 0, sizeof(float) * output.size(), output.data());
     std::cout << "finished reading output off vram\n";
