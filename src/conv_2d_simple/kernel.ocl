@@ -1,34 +1,42 @@
-// File: convolution_kernel.ocl
 __kernel void kernel_app(
     __global const float* input,
     __global const float* filter,
-    __global float* output,   
-    const int input_width,    
-    const int input_height,   
-    const int filter_width,   
-    const int filter_height,
-    const int stride
+    __global float* output,
+    __global const int* other_ints
 )
 {
-    int x = get_global_id(0);
-    int y = get_global_id(1);
-
-    // Check if we're within the valid output range
-    int output_width = input_width - filter_width + 1;
-    int output_height = input_height - filter_height + 1;
-
-    if (x < output_width && y < output_height)
-        return;
+    int stride, input_width, input_height, filter_width, filter_height;
+    stride = other_ints[0];
+    input_width = other_ints[1];
+    input_height = other_ints[2];
+    filter_width = other_ints[3];
+    filter_height = other_ints[4];
+    
+    // Get output coordinates
+    int out_x = get_global_id(0);
+    int out_y = get_global_id(1);
+    
+    // Compute output dimensions
+    int output_width = (input_width - filter_width) / stride + 1;
+    int output_height = (input_height - filter_height) / stride + 1;
+    
+    // Check if within bounds
+    if (out_x < output_width && out_y < output_height) {
+        float sum = 0.0f;
         
-    // Apply filter (cross-correlation)
-    float sum = 0.0f;
-    for (int i = 0; i < filter_height; i++)
-        for (int j = 0; j < filter_width; j++) {
-            int input_x = x + j;
-            int input_y = y + i;
-            sum += input[input_y * input_width + input_x] * filter[i * filter_width + j];
+        // Perform convolution
+        for (int fy = 0; fy < filter_height; fy++) {
+            for (int fx = 0; fx < filter_width; fx++) {
+                int in_x = out_x * stride + fx;
+                int in_y = out_y * stride + fy;
+                int input_idx = in_y * input_width + in_x;
+                int filter_idx = fy * filter_width + fx;
+                
+                sum += input[input_idx] * filter[filter_idx];
+            }
         }
-
-    // Write result to output
-    output[y * output_width + x] = sum;
+        
+        // Write result to output
+        output[out_y * output_width + out_x] = sum;
+    }
 }

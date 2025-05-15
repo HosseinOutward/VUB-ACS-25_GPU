@@ -43,15 +43,14 @@ int main()
                         sizeof(float) * filter.size(), filter.data());
     cl::Buffer d_output(context, CL_MEM_READ_WRITE,
                         sizeof(float) * output.size(), nullptr);
-                        
     kernel.setArg(0, d_input);
     kernel.setArg(1, d_filter);
     kernel.setArg(2, d_output);
-    kernel.setArg(3, input_width);
-    kernel.setArg(4, input_height);
-    kernel.setArg(5, filter_width);
-    kernel.setArg(6, filter_height);
-    kernel.setArg(7, stride);
+
+    std::vector<int> other_ints = {stride, input_width, input_height, filter_width, filter_height};
+    cl::Buffer d_other_ints(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                        sizeof(int) * other_ints.size(), other_ints.data());
+    kernel.setArg(3, d_other_ints);
 
     // ------------------ run gpu convolution ------------------
     std::cout << "\nbeginning conv2d_cpu_threaded\n";
