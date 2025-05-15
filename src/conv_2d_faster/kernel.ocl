@@ -1,0 +1,79 @@
+__kernel void kernel_app(
+    __global const float* input_img,
+    __global const float* filter_k,
+    __global float* output_img,
+    __global const int* params,
+    __local float* input_tile
+)
+{
+    int stride = params[0];
+    int input_w = params[1];
+    int input_h = params[2];
+    int filter_w = params[3];
+    int filter_h = params[4];
+    int channels = params[5];
+
+    // Global and local IDs
+    int lix = get_local_id(0);
+    int liy = get_local_id(1);
+    int gix = get_global_id(0);
+    int giy = get_global_id(1);
+    int ch = get_global_id(2);
+
+    // Dimensions of the local input tile needed by this work-group
+    int tile_w = (get_local_size(0) - 1) * stride + filter_w;
+    int tile_h = (get_local_size(1) - 1) * stride + filter_h;
+
+    // Top-left global input coordinates for this work-group's tile
+    int group_input_start_x = get_group_id(0) * get_local_size(0) * stride;
+    int group_input_start_y = get_group_id(1) * get_local_size(1) * stride;
+
+    // Load data into local memory tile (input_tile)
+    for (int ty = liy; ty < tile_h; ty += get_local_size(1)) {
+        for (int tx = lix; tx < tile_w; tx += get_local_size(0)) {
+            int current_global_x = group_input_start_x + tx;
+            int current_global_y = group_input_start_y + ty;
+            int tile_idx = ty * tile_w + tx;
+
+            if (current_global_x >= 0 && current_global_x < input_w &&
+                current_global_y >= 0 && current_global_y < input_h) {
+                int global_input_idx = (ch * input_h * input_w) + (current_global_y * input_w + current_global_x);
+                input_tile[tile_idx] = input_img[global_input_idx];
+            } else {
+                input_tile[tile_idx] = 0.0f; // Pad with zeros for out-of-bounds
+            }
+        }
+    }
+
+    barrier(CLK_LOCAL_MEM_FENCE); // Sync work-items after loading tile
+
+    // Output dimensions
+    int output_w = (input_w - filter_w) / stride + 1;
+    int output_h = (input_h - filter_h) / stride + 1;
+
+    // Check if current global work-item is within output image bounds
+    if (gix < output_w && giy < output_h && ch < channels) {
+        float sum = 0.0f;
+
+        // Top-left position for convolution within the local tile
+        int local_conv_start_x = lix * stride;
+        int local_conv_start_y = liy * stride;
+
+        // Perform convolution using data from input_tile
+        for (int fy = 0; fy < filter_h; fy++) {
+            for (int fx = 0; fx < filter_w; fx++) {
+                int tile_access_x = local_conv_start_x + fx;
+                int tile_access_y = local_conv_start_y + fy;
+                
+                int current_tile_idx = tile_access_y * tile_w + tile_access_x;
+                int filter_idx = fy * filter_w + fx;
+                
+                sum += input_tile[current_tile_idx] * filter_k[filter_idx];
+            }
+        }
+        
+        // Write result to output_img
+        int output_idx = (ch * output_h * output_w) + (giy * output_w + gix);
+        output_img[output_idx] = sum;
+    }
+}
