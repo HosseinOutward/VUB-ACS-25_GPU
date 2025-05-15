@@ -59,6 +59,11 @@ std::string loadKernelSource() {
         exec_file_name = "unknown";
     }
 
+    // if has _HTP, remove it
+    if (exec_file_name.find("_HTP") != std::string::npos) {
+        exec_file_name.erase(exec_file_name.find("_HTP"), 4);
+    }
+
     // Construct the full path to the kernel file
     std::string path = "src/" + exec_file_name + "/kernel.ocl";
 
