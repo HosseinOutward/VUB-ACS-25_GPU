@@ -6,7 +6,7 @@ import numpy as np
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKSPACE_ROOT = os.path.dirname(SCRIPT_DIR)
-EXECUTABLE_PATH = os.path.join(WORKSPACE_ROOT, "bin", "conv_2d_faster_analysis1.exe")
+# EXECUTABLE_PATH = os.path.join(WORKSPACE_ROOT, "bin", "conv_2d_faster_analysis1.exe") # Will be set in main
 
 
 def run_cpp_analysis(executable_path, batch_count_arg, execution_cwd):
@@ -318,11 +318,12 @@ def plot_timings(timings_data):  # Removed tested_batch_count argument
     plt.show()
 
 
-def main(batch_count_arg: int = 10):
-    cpp_output = run_cpp_analysis(EXECUTABLE_PATH, batch_count_arg, WORKSPACE_ROOT)
+def main(batch_count_arg: int = 10, executable_name: str = "conv_2d_faster_analysis1.exe"):
+    executable_path = os.path.join(WORKSPACE_ROOT, "bin", executable_name)
+    cpp_output = run_cpp_analysis(executable_path, batch_count_arg, WORKSPACE_ROOT)
     parsed_timings = parse_output(cpp_output)
 
-    print("\n--- Parsed Timings ---")
+    print(f"\\n--- Parsed Timings for {executable_name} (Batch Count: {batch_count_arg}) ---")
     actual_batches = parsed_timings.get("ActualBatchCount", 0)
     print(f"  Actual Batches by C++: {actual_batches}")
     timer_res = parsed_timings.get("DeviceProfilingTimerResolution_ns", "N/A")
@@ -362,4 +363,10 @@ def main(batch_count_arg: int = 10):
 
 
 if __name__ == "__main__":
-    main(50)
+    a="conv_2d_faster_analysis3.exe"
+    main(2, a)
+    main(5,a)
+    main(25,a)
+    main(100,a)
+    main(200,a)
+    main(450,a)

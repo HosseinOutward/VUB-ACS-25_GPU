@@ -69,14 +69,6 @@ int main(int argc, char* argv[])
     
     std::vector<std::vector<cl_half>> outputs(batch_count);
 
-    // Vectors to store durations
-    std::vector<cl_ulong> input_write_queue_durations_ns(batch_count);
-    std::vector<cl_ulong> input_write_exec_durations_ns(batch_count);
-    std::vector<cl_ulong> kernel_queue_durations_ns(batch_count);
-    std::vector<cl_ulong> kernel_exec_durations_ns(batch_count);
-    std::vector<cl_ulong> read_queue_durations_ns(batch_count);
-    std::vector<cl_ulong> read_exec_durations_ns(batch_count);
-
     // New vectors for overall batch times (enqueue to wait completion)
     std::vector<std::chrono::high_resolution_clock::time_point> batch_input_write_overall_starts(batch_count);
     std::vector<double> batch_input_write_overall_times_ms(batch_count);
@@ -209,70 +201,37 @@ int main(int argc, char* argv[])
     filter_write_queue_duration_ns = start_fw - queued_fw;
     filter_write_exec_duration_ns = end_fw - start_fw;
 
-    // Wait for input writes to complete and profile them
+    // Wait for input writes to complete and profile their overall chrono times
     std::cout << "Profiling input writes..." << std::endl;
     for (int i = 0; i < batch_count; ++i) {
         input_write_events[i].wait();
-        if (!batch_input_write_chrono_recorded[i]) { // If not recorded by periodic check
-            batch_input_write_overall_ends[i] = std::chrono::high_resolution_clock::now();
-            batch_input_write_overall_times_ms[i] = std::chrono::duration<double, std::milli>(
-                batch_input_write_overall_ends[i] - batch_input_write_overall_starts[i]).count();
-            // batch_input_write_chrono_recorded[i] = true; // Mark as recorded
+        auto end_time = std::chrono::high_resolution_clock::now();
+        if (!batch_input_write_chrono_recorded[i]) {
+            batch_input_write_overall_times_ms[i] = std::chrono::duration<double, std::milli>(end_time - batch_input_write_overall_starts[i]).count();
+            batch_input_write_chrono_recorded[i] = true;
         }
-        // auto batch_input_write_overall_end = std::chrono::high_resolution_clock::now(); // Stop input write overall timer // OLD
-        // batch_input_write_overall_times_ms[i] = std::chrono::duration<double, std::milli>( // OLD
-        //     batch_input_write_overall_end - batch_input_write_overall_starts[i]).count(); // OLD
-
-        cl_ulong queued_iw, start_iw, end_iw;
-        input_write_events[i].getProfilingInfo(CL_PROFILING_COMMAND_QUEUED, &queued_iw);
-        input_write_events[i].getProfilingInfo(CL_PROFILING_COMMAND_START, &start_iw);
-        input_write_events[i].getProfilingInfo(CL_PROFILING_COMMAND_END, &end_iw);
-        input_write_queue_durations_ns[i] = start_iw - queued_iw;
-        input_write_exec_durations_ns[i] = end_iw - start_iw;
     }
 
-    // Wait for kernels to complete and profile them
+    // Wait for kernels to complete and profile their overall chrono times
     std::cout << "Profiling kernel executions..." << std::endl;
     for (int i = 0; i < batch_count; ++i) {
-        kernel_events[i].wait(); // Wait for kernel i to complete
+        kernel_events[i].wait();
+        auto end_time = std::chrono::high_resolution_clock::now();
         if (!batch_kernel_chrono_recorded[i]) {
-            batch_kernel_overall_ends[i] = std::chrono::high_resolution_clock::now();
-            batch_kernel_overall_times_ms[i] = std::chrono::duration<double, std::milli>(
-                batch_kernel_overall_ends[i] - batch_kernel_overall_starts[i]).count();
+            batch_kernel_overall_times_ms[i] = std::chrono::duration<double, std::milli>(end_time - batch_kernel_overall_starts[i]).count();
+            batch_kernel_chrono_recorded[i] = true;
         }
-        // auto batch_kernel_overall_end = std::chrono::high_resolution_clock::now(); // Stop kernel overall timer // OLD
-        // batch_kernel_overall_times_ms[i] = std::chrono::duration<double, std::milli>( // OLD
-        //     batch_kernel_overall_end - batch_kernel_overall_starts[i]).count(); // OLD
-        
-        // Profile kernel event
-        cl_ulong queued_k, start_k, end_k;
-        kernel_events[i].getProfilingInfo(CL_PROFILING_COMMAND_QUEUED, &queued_k);
-        kernel_events[i].getProfilingInfo(CL_PROFILING_COMMAND_START, &start_k);
-        kernel_events[i].getProfilingInfo(CL_PROFILING_COMMAND_END, &end_k);
-        kernel_queue_durations_ns[i] = start_k - queued_k;
-        kernel_exec_durations_ns[i] = end_k - start_k;
     }
     
-    // Wait for reads to complete and profile them
+    // Wait for reads to complete and profile their overall chrono times
     std::cout << "Profiling output reads..." << std::endl;
     for (int i = 0; i < batch_count; ++i) {
-        read_events[i].wait(); // Wait for read i to complete
+        read_events[i].wait();
+        auto end_time = std::chrono::high_resolution_clock::now();
         if (!batch_read_chrono_recorded[i]) {
-            batch_read_overall_ends[i] = std::chrono::high_resolution_clock::now();
-            batch_read_overall_times_ms[i] = std::chrono::duration<double, std::milli>(
-                batch_read_overall_ends[i] - batch_read_overall_starts[i]).count();
+            batch_read_overall_times_ms[i] = std::chrono::duration<double, std::milli>(end_time - batch_read_overall_starts[i]).count();
+            batch_read_chrono_recorded[i] = true;
         }
-        // auto batch_read_overall_end = std::chrono::high_resolution_clock::now(); // Stop read overall timer // OLD
-        // batch_read_overall_times_ms[i] = std::chrono::duration<double, std::milli>( // OLD
-        //     batch_read_overall_end - batch_read_overall_starts[i]).count(); // OLD
-
-        // Profile read event
-        cl_ulong queued_r, start_r, end_r;
-        read_events[i].getProfilingInfo(CL_PROFILING_COMMAND_QUEUED, &queued_r);
-        read_events[i].getProfilingInfo(CL_PROFILING_COMMAND_START, &start_r);
-        read_events[i].getProfilingInfo(CL_PROFILING_COMMAND_END, &end_r);
-        read_queue_durations_ns[i] = start_r - queued_r;
-        read_exec_durations_ns[i] = end_r - start_r;
     }
     
     auto overall_end_time = std::chrono::high_resolution_clock::now();
@@ -284,15 +243,9 @@ int main(int argc, char* argv[])
     std::cout << "FilterWriteQueueTime_ns:" << filter_write_queue_duration_ns << std::endl;
     std::cout << "FilterWriteExecTime_ns:" << filter_write_exec_duration_ns << std::endl;
     for (int i = 0; i < batch_count; ++i) {
-        std::cout << "Batch_" << i << "_InputWriteQueueTime_ns:" << input_write_queue_durations_ns[i] << std::endl;
-        std::cout << "Batch_" << i << "_InputWriteExecTime_ns:" << input_write_exec_durations_ns[i] << std::endl;
-        std::cout << "Batch_" << i << "_InputWriteOverallTime_ms:" << batch_input_write_overall_times_ms[i] << std::endl; // New
-        std::cout << "Batch_" << i << "_KernelQueueTime_ns:" << kernel_queue_durations_ns[i] << std::endl;
-        std::cout << "Batch_" << i << "_KernelExecTime_ns:" << kernel_exec_durations_ns[i] << std::endl;
-        std::cout << "Batch_" << i << "_KernelOverallTime_ms:" << batch_kernel_overall_times_ms[i] << std::endl; // New
-        std::cout << "Batch_" << i << "_ReadQueueTime_ns:" << read_queue_durations_ns[i] << std::endl;
-        std::cout << "Batch_" << i << "_ReadExecTime_ns:" << read_exec_durations_ns[i] << std::endl;
-        std::cout << "Batch_" << i << "_ReadOverallTime_ms:" << batch_read_overall_times_ms[i] << std::endl; // New
+        std::cout << "Batch_" << i << "_InputWriteOverallTime_ms:" << batch_input_write_overall_times_ms[i] << std::endl;
+        std::cout << "Batch_" << i << "_KernelOverallTime_ms:" << batch_kernel_overall_times_ms[i] << std::endl;
+        std::cout << "Batch_" << i << "_ReadOverallTime_ms:" << batch_read_overall_times_ms[i] << std::endl;
     }
     std::cout << "OverallBatchProcessingTime_ms:" << overall_duration_ms << std::endl;
     std::cout << "ActualBatchCount:" << batch_count << std::endl; // C++ knows its actual batch count
