@@ -46,7 +46,8 @@ int main(int argc, char* argv[])
 
 
     FilePaths paths;
-    std::vector<cl_half> input_img, filter_original_loaded, single_output_template_original_loaded;
+    std::vector<unsigned char> input_img;
+    std::vector<float> filter_original_loaded, single_output_template_original_loaded;
     int input_width, input_height, channel_count,
         filter_width_original_loaded, filter_height_original_loaded, stride,
         output_width_original_loaded, output_height_original_loaded;
@@ -59,10 +60,10 @@ int main(int argc, char* argv[])
     // ---- Override filter and related dimensions based on kernel_dim_arg ----
     int actual_filter_width = kernel_dim_arg;
     int actual_filter_height = kernel_dim_arg;
-    std::vector<cl_half> actual_filter(actual_filter_width * actual_filter_height);
+    std::vector<float> actual_filter(actual_filter_width * actual_filter_height);
     
     if (actual_filter_width * actual_filter_height > 0) {
-        cl_half filter_val = cl_half(1.0f / (float)(actual_filter_width * actual_filter_height));
+        float filter_val = 1.0f / (float)(actual_filter_width * actual_filter_height);
         for(size_t i = 0; i < actual_filter.size(); ++i) {
             actual_filter[i] = filter_val;
         }
@@ -96,7 +97,7 @@ int main(int argc, char* argv[])
         return 0; // Graceful exit for Python script
     }
 
-    std::vector<cl_half> actual_single_output_template( (size_t)actual_output_width * actual_output_height * channel_count, cl_half(0.0f));
+    std::vector<float> actual_single_output_template( (size_t)actual_output_width * actual_output_height * channel_count, 0.0f);
     // ---- End of Override ----
 
 
@@ -114,16 +115,10 @@ int main(int argc, char* argv[])
         actual_output_width, actual_output_height); // use actual output dimensions
     
     // ------------------ local memory and worker config ------------------
-    size_t local_wg_dim_x, local_wg_dim_y,
-           global_work_size_x, global_work_size_y;
+    size_t global_work_size_x, global_work_size_y;
+    global_work_size_x = static_cast<size_t>(actual_output_width);
+    global_work_size_y = static_cast<size_t>(actual_output_height); 
 
-    configureLocalMemoryAndWorkers(device, kernel, stride,
-                                   actual_filter_width, actual_filter_height, // use actual filter dimensions
-                                   actual_output_width, actual_output_height, // use actual output dimensions
-                                   local_wg_dim_x, local_wg_dim_y,
-                                   global_work_size_x, global_work_size_y);
-
-    cl::NDRange local_dims(local_wg_dim_x, local_wg_dim_y, 1);
     cl::NDRange global_dims(global_work_size_x, global_work_size_y, channel_count);
 
     // ------------------ high throughput batch pipeline ------------------
@@ -131,13 +126,13 @@ int main(int argc, char* argv[])
     // if (argc > 1) batch_count = std::stoi(argv[1]); // This line is now redundant
 
     // Buffer for the filter
-    cl::Buffer d_filter(context, CL_MEM_READ_ONLY, sizeof(cl_half) * actual_filter.size(), nullptr); // Use actual_filter.size()
+    cl::Buffer d_filter(context, CL_MEM_READ_ONLY, sizeof(float) * actual_filter.size(), nullptr); // Use actual_filter.size()
     
     // Vectors for input/output buffers
     std::vector<cl::Buffer> d_inputs(batch_count);
     std::vector<cl::Buffer> d_outputs(batch_count);
     
-    std::vector<std::vector<cl_half>> outputs(batch_count);
+    std::vector<std::vector<float>> outputs(batch_count);
 
     std::cout << "\nBeginning sequential conv2d with " << batch_count << " batches and " 
               << actual_filter_width << "x" << actual_filter_height << " kernel\n"; // Updated message
@@ -147,14 +142,14 @@ int main(int argc, char* argv[])
     // Enqueue write for the filter buffer and wait for it to complete
     cl::Event filter_write_event;
     // Use actual_filter.data() and actual_filter.size()
-    queue.enqueueWriteBuffer(d_filter, CL_TRUE, 0, sizeof(cl_half) * actual_filter.size(), actual_filter.data(), nullptr, &filter_write_event);
+    queue.enqueueWriteBuffer(d_filter, CL_TRUE, 0, sizeof(float) * actual_filter.size(), actual_filter.data(), nullptr, &filter_write_event);
     filter_write_event.wait(); // Ensure filter is written before any batch processing
 
     // Prepare output vectors and OpenCL output buffers (can still be done upfront)
     for (int i = 0; i < batch_count; ++i) {
         outputs[i].resize(actual_single_output_template.size()); // Use actual_single_output_template.size()
-        d_inputs[i] = cl::Buffer(context, CL_MEM_READ_ONLY, sizeof(cl_half) * input_img.size(), nullptr); // input_img size is constant
-        d_outputs[i] = cl::Buffer(context, CL_MEM_WRITE_ONLY, sizeof(cl_half) * outputs[i].size(), nullptr); // outputs[i] size is now based on actual output
+        d_inputs[i] = cl::Buffer(context, CL_MEM_READ_ONLY, sizeof(u_char) * input_img.size(), nullptr); // input_img size is constant, type is unsigned char
+        d_outputs[i] = cl::Buffer(context, CL_MEM_WRITE_ONLY, sizeof(float) * outputs[i].size(), nullptr); // outputs[i] size is now based on actual output
     }
 
     // Main sequential loop: Write, Kernel, Read for each batch, waiting for completion of each step.
@@ -163,8 +158,8 @@ int main(int argc, char* argv[])
     for (int i = 0; i < batch_count; ++i) {
         // 1. Enqueue Input Write & Wait
         cl::Event input_write_event;
-        queue.enqueueWriteBuffer(d_inputs[i], CL_TRUE, 0, sizeof(cl_half) * input_img.size(),
-                                 const_cast<cl_half*>(input_img.data()), nullptr, &input_write_event);
+        queue.enqueueWriteBuffer(d_inputs[i], CL_TRUE, 0, sizeof(unsigned char) * input_img.size(),
+                                 (input_img.data()), nullptr, &input_write_event);
         input_write_event.wait();
 
         // 2. Enqueue Kernel & Wait
@@ -174,12 +169,12 @@ int main(int argc, char* argv[])
         
         cl::Event kernel_event;
         // No explicit event dependencies needed as previous operations are blocking (CL_TRUE or explicit wait)
-        queue.enqueueNDRangeKernel(kernel, cl::NullRange, global_dims, local_dims, nullptr, &kernel_event);
+        queue.enqueueNDRangeKernel(kernel, cl::NullRange, global_dims, cl::NullRange, nullptr, &kernel_event);
         kernel_event.wait();
 
         // 3. Enqueue Output Read & Wait
         cl::Event read_event;
-        queue.enqueueReadBuffer(d_outputs[i], CL_TRUE, 0, sizeof(cl_half) * outputs[i].size(),
+        queue.enqueueReadBuffer(d_outputs[i], CL_TRUE, 0, sizeof(float) * outputs[i].size(),
                                 outputs[i].data(), nullptr, &read_event);
         read_event.wait();
     }

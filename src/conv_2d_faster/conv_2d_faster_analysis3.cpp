@@ -18,7 +18,8 @@ int main(int argc, char* argv[])
 {
     /*------------------ INPUT ------------------*/
     FilePaths paths;
-    std::vector<cl_half> input_img, filter, single_output_template;
+    std::vector<unsigned char> input_img;
+    std::vector<float> filter_original_loaded, filter, single_output_template;
     int input_width, input_height, channel_count,
         filter_width, filter_height, stride, output_width, output_height;
 
@@ -39,14 +40,10 @@ int main(int argc, char* argv[])
         channel_count, output_width, output_height);
     
     // ------------------ local memory and worker config ------------------
-    size_t local_wg_dim_x, local_wg_dim_y,
-           global_work_size_x, global_work_size_y;
+    size_t global_work_size_x, global_work_size_y;
+    global_work_size_x = static_cast<size_t>(output_width);
+    global_work_size_y = static_cast<size_t>(output_height); 
 
-    configureLocalMemoryAndWorkers(device, kernel, stride, filter_width, filter_height,
-                                   output_width, output_height, local_wg_dim_x, local_wg_dim_y,
-                                   global_work_size_x, global_work_size_y);
-
-    cl::NDRange local_dims(local_wg_dim_x, local_wg_dim_y, 1);
     cl::NDRange global_dims(global_work_size_x, global_work_size_y, channel_count);
 
     // ------------------ high throughput batch pipeline ------------------
@@ -54,13 +51,13 @@ int main(int argc, char* argv[])
     if (argc > 1) batch_count = std::stoi(argv[1]);
 
     // Buffer for the filter
-    cl::Buffer d_filter(context, CL_MEM_READ_ONLY, sizeof(cl_half) * filter.size(), nullptr);
+    cl::Buffer d_filter(context, CL_MEM_READ_ONLY, sizeof(float) * filter.size(), nullptr);
     
     // Vectors for input/output buffers
     std::vector<cl::Buffer> d_inputs(batch_count);
     std::vector<cl::Buffer> d_outputs(batch_count);
     
-    std::vector<std::vector<cl_half>> outputs(batch_count);
+    std::vector<std::vector<float>> outputs(batch_count);
 
     std::cout << "\nBeginning sequential conv2d with " << batch_count << " batches\n";
 
@@ -68,14 +65,14 @@ int main(int argc, char* argv[])
 
     // Enqueue write for the filter buffer and wait for it to complete
     cl::Event filter_write_event;
-    queue.enqueueWriteBuffer(d_filter, CL_TRUE, 0, sizeof(cl_half) * filter.size(), filter.data(), nullptr, &filter_write_event);
+    queue.enqueueWriteBuffer(d_filter, CL_TRUE, 0, sizeof(float) * filter.size(), filter.data(), nullptr, &filter_write_event);
     filter_write_event.wait(); // Ensure filter is written before any batch processing
 
     // Prepare output vectors and OpenCL output buffers (can still be done upfront)
     for (int i = 0; i < batch_count; ++i) {
         outputs[i].resize(single_output_template.size());
-        d_inputs[i] = cl::Buffer(context, CL_MEM_READ_ONLY, sizeof(cl_half) * input_img.size(), nullptr);
-        d_outputs[i] = cl::Buffer(context, CL_MEM_WRITE_ONLY, sizeof(cl_half) * outputs[i].size(), nullptr);
+        d_inputs[i] = cl::Buffer(context, CL_MEM_READ_ONLY, sizeof(unsigned char) * input_img.size(), nullptr);
+        d_outputs[i] = cl::Buffer(context, CL_MEM_WRITE_ONLY, sizeof(float) * outputs[i].size(), nullptr);
     }
 
     // Main sequential loop: Write, Kernel, Read for each batch, waiting for completion of each step.
@@ -84,8 +81,8 @@ int main(int argc, char* argv[])
     for (int i = 0; i < batch_count; ++i) {
         // 1. Enqueue Input Write & Wait
         cl::Event input_write_event;
-        queue.enqueueWriteBuffer(d_inputs[i], CL_TRUE, 0, sizeof(cl_half) * input_img.size(),
-                                 const_cast<cl_half*>(input_img.data()), nullptr, &input_write_event);
+        queue.enqueueWriteBuffer(d_inputs[i], CL_TRUE, 0, sizeof(unsigned char) * input_img.size(),
+                                 (input_img.data()), nullptr, &input_write_event);
         input_write_event.wait();
 
         // 2. Enqueue Kernel & Wait
@@ -95,12 +92,12 @@ int main(int argc, char* argv[])
         
         cl::Event kernel_event;
         // No explicit event dependencies needed as previous operations are blocking (CL_TRUE or explicit wait)
-        queue.enqueueNDRangeKernel(kernel, cl::NullRange, global_dims, local_dims, nullptr, &kernel_event);
+        queue.enqueueNDRangeKernel(kernel, cl::NullRange, global_dims, cl::NullRange, nullptr, &kernel_event);
         kernel_event.wait();
 
         // 3. Enqueue Output Read & Wait
         cl::Event read_event;
-        queue.enqueueReadBuffer(d_outputs[i], CL_TRUE, 0, sizeof(cl_half) * outputs[i].size(),
+        queue.enqueueReadBuffer(d_outputs[i], CL_TRUE, 0, sizeof(float) * outputs[i].size(),
                                 outputs[i].data(), nullptr, &read_event);
         read_event.wait();
     }

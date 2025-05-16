@@ -18,7 +18,8 @@ int main(int argc, char* argv[])
 {
     /*------------------ INPUT ------------------*/
     FilePaths paths;
-    std::vector<cl_half> input_img, filter, single_output_template;
+    std::vector<unsigned char> input_img;
+    std::vector<float> filter_original_loaded, filter, single_output_template;
     int input_width, input_height, channel_count,
         filter_width, filter_height, stride, output_width, output_height;
 
@@ -54,7 +55,7 @@ int main(int argc, char* argv[])
     if (argc > 1) batch_count = std::stoi(argv[1]);
 
     // Buffer for the filter and its write event
-    cl::Buffer d_filter(context, CL_MEM_READ_ONLY, sizeof(cl_half) * filter.size(), nullptr);
+    cl::Buffer d_filter(context, CL_MEM_READ_ONLY, sizeof(float) * filter.size(), nullptr);
     cl::Event filter_write_event;
     cl_ulong filter_write_queue_duration_ns;
     cl_ulong filter_write_exec_duration_ns;
@@ -67,7 +68,7 @@ int main(int argc, char* argv[])
     std::vector<cl::Event> kernel_events(batch_count);
     std::vector<cl::Event> read_events(batch_count);
     
-    std::vector<std::vector<cl_half>> outputs(batch_count);
+    std::vector<std::vector<float>> outputs(batch_count);
 
     // Vectors to store durations
     std::vector<cl_ulong> input_write_queue_durations_ns(batch_count);
@@ -99,14 +100,14 @@ int main(int argc, char* argv[])
     auto overall_start_time = std::chrono::high_resolution_clock::now(); // Start timing before VRAM transfers
 
     // Enqueue write for the filter buffer
-    queue.enqueueWriteBuffer(d_filter, CL_FALSE, 0, sizeof(cl_half) * filter.size(), filter.data(), nullptr, &filter_write_event);
+    queue.enqueueWriteBuffer(d_filter, CL_FALSE, 0, sizeof(float) * filter.size(), filter.data(), nullptr, &filter_write_event);
 
     // Prepare output vectors and OpenCL output buffers
     for (int i = 0; i < batch_count; ++i) {
         outputs[i].resize(single_output_template.size());
         // Create input and output buffers for each batch upfront
-        d_inputs[i] = cl::Buffer(context, CL_MEM_READ_ONLY, sizeof(cl_half) * input_img.size(), nullptr);
-        d_outputs[i] = cl::Buffer(context, CL_MEM_WRITE_ONLY, sizeof(cl_half) * outputs[i].size(), nullptr);
+        d_inputs[i] = cl::Buffer(context, CL_MEM_READ_ONLY, sizeof(u_char) * input_img.size(), nullptr);
+        d_outputs[i] = cl::Buffer(context, CL_MEM_WRITE_ONLY, sizeof(float) * outputs[i].size(), nullptr);
     }
 
     // Main enqueue loop: Write, Kernel, Read for each batch
@@ -130,8 +131,8 @@ int main(int argc, char* argv[])
     for (int i = 0; i < batch_count; ++i) {
         // 1. Enqueue Input Write
         batch_input_write_overall_starts[i] = std::chrono::high_resolution_clock::now();
-        queue.enqueueWriteBuffer(d_inputs[i], CL_FALSE, 0, sizeof(cl_half) * input_img.size(),
-                                 const_cast<cl_half*>(input_img.data()), nullptr, &input_write_events[i]);
+        queue.enqueueWriteBuffer(d_inputs[i], CL_FALSE, 0, sizeof(u_char) * input_img.size(),
+                                 (input_img.data()), nullptr, &input_write_events[i]);
 
         // 2. Enqueue Kernel
         kernel.setArg(0, d_inputs[i]);
@@ -147,7 +148,7 @@ int main(int argc, char* argv[])
         std::vector<cl::Event> read_dependencies;
         read_dependencies.push_back(kernel_events[i]); // Read depends on its corresponding kernel
         batch_read_overall_starts[i] = std::chrono::high_resolution_clock::now();
-        queue.enqueueReadBuffer(d_outputs[i], CL_FALSE, 0, sizeof(cl_half) * outputs[i].size(),
+        queue.enqueueReadBuffer(d_outputs[i], CL_FALSE, 0, sizeof(float) * outputs[i].size(),
                                 outputs[i].data(), &read_dependencies, &read_events[i]);
 
         // Periodic status check (non-blocking)

@@ -1,9 +1,9 @@
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
 
 __kernel void kernel_app(
-    __global const half* input_img,
-    __global const half* filter_k,
-    __global half* output_img,
+    __global const unsigned char* input_img,   // Changed to unsigned char
+    __global const float* filter_k,            // Changed to float
+    __global float* output_img,     
     const int stride,
     const int input_w,
     const int input_h,
@@ -14,7 +14,7 @@ __kernel void kernel_app(
     const int tile_h,
     const int output_w,
     const int output_h,
-    __local half* input_tile
+    __local unsigned char* input_tile
 )
 {
     // Global and local IDs
@@ -23,25 +23,25 @@ __kernel void kernel_app(
     int gix = get_global_id(0);
     int giy = get_global_id(1);
     int ch = get_global_id(2);
-
+    
     // __________________ load data to local memory __________________
     // Top-left global input coordinates for this work-group's tile
     int group_input_start_x = get_group_id(0) * get_local_size(0) * stride;
     int group_input_start_y = get_group_id(1) * get_local_size(1) * stride;
-
+        
     // Load data into local memory tile (input_tile)
     for (int ty = liy; ty < tile_h; ty += get_local_size(1)) {
         for (int tx = lix; tx < tile_w; tx += get_local_size(0)) {
             int current_global_x = group_input_start_x + tx;
             int current_global_y = group_input_start_y + ty;
             int tile_idx = ty * tile_w + tx;
-
+                
             if (current_global_x >= 0 && current_global_x < input_w &&
                 current_global_y >= 0 && current_global_y < input_h) {
                 int global_input_idx = (ch * input_h * input_w) + (current_global_y * input_w + current_global_x);
                 input_tile[tile_idx] = input_img[global_input_idx];
             } else {
-                input_tile[tile_idx] = 0.0h; // Pad with zeros for out-of-bounds
+                input_tile[tile_idx] = 0;
             }
         }
     }
@@ -51,7 +51,7 @@ __kernel void kernel_app(
     // __________________ conv cal __________________
     // Check if current global work-item is within output image bounds
     if (gix < output_w && giy < output_h && ch < channels) {
-        half sum = 0.0h;
+        float sum = 0.0f;
 
         // Top-left position for convolution within the local tile
         int local_conv_start_x = lix * stride;
@@ -66,7 +66,9 @@ __kernel void kernel_app(
                 int current_tile_idx = tile_access_y * tile_w + tile_access_x;
                 int filter_idx = fy * filter_w + fx;
                 
-                sum += input_tile[current_tile_idx] * filter_k[filter_idx];
+                float input_val = (float)input_tile[current_tile_idx] / 255.0f;
+                float filter_val = filter_k[filter_idx]; 
+                sum += input_val * filter_val;
             }
         }
         

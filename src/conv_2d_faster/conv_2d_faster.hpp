@@ -1,27 +1,42 @@
+#include <algorithm> // Required for std::min/max if not already included, or for a custom clamp
+
+// Helper function to clamp values before casting to unsigned char
+inline unsigned char float_to_uchar_clamped(float val) {
+    val = val * 255.0f;
+    if (val < 0.0f) val = 0.0f;
+    if (val > 255.0f) val = 255.0f;
+    return static_cast<unsigned char>(val);
+}
+
 void loadInputs(
-    FilePaths& paths, std::vector<cl_half>& input_img, int& input_width, 
-    int& input_height, int& channel_count, std::vector<cl_half>& filter, 
+    FilePaths& paths, std::vector<unsigned char>& input_img, int& input_width, 
+    int& input_height, int& channel_count, std::vector<float>& filter, // Changed to std::vector<float>
     int& filter_width, int& filter_height,
-    int& stride, int& output_width, int& output_height, std::vector<cl_half>& output
+    int& stride, int& output_width, int& output_height, std::vector<float>& output // Output is now std::vector<float>
 ) {
     paths = loadPathsFromConfig("data/in/config_conv.txt");
-    // Assuming readPngImage and loadConvKernelFromFile can be adapted or are already flexible
-    // to handle cl_half or that you'll convert float to cl_half after loading.
-    // For this example, let's assume they return float and we convert.
+    
     std::vector<float> float_input_img = readPngImage(paths.inputImagePath, input_width, input_height, channel_count);
-    std::vector<float> float_filter = loadConvKernelFromFile(paths.kernelFilePath, filter_height, filter_width);
+    // filter is now float, so we can use float_filter directly or assign
+    filter = loadConvKernelFromFile(paths.kernelFilePath, filter_height, filter_width);
 
-    // Convert float vectors to cl_half vectors
+    // Convert float input_img to unsigned char vector
     input_img.resize(float_input_img.size());
-    std::transform(float_input_img.begin(), float_input_img.end(), input_img.begin(), [](float val) { return static_cast<cl_half>(val); });
+    std::transform(float_input_img.begin(), float_input_img.end(), input_img.begin(), [](float val) { 
+        return float_to_uchar_clamped(val);
+    });
 
-    filter.resize(float_filter.size());
-    std::transform(float_filter.begin(), float_filter.end(), filter.begin(), [](float val) { return static_cast<cl_half>(val); });
+    // No conversion needed for filter as it's now float
+    // filter.resize(float_filter.size());
+    // std::transform(float_filter.begin(), float_filter.end(), filter.begin(), [](float val) { 
+    //     return float_to_uchar_clamped(val); // This was for uchar filter
+    // });
 
-    stride = 1; // Define stride here or pass as argument if it can vary
+    stride = 1; 
     output_width = (input_width - filter_width) / stride + 1;
     output_height = (input_height - filter_height) / stride + 1;
-    output.assign(static_cast<size_t>(output_width) * output_height * channel_count, static_cast<cl_half>(0.0f)); // Initialize output vector
+    // Initialize float output vector with 0.0f
+    output.assign(static_cast<size_t>(output_width) * output_height * channel_count, 0.0f); 
 }
 
 // Helper function for GPU initialization
@@ -64,7 +79,7 @@ void configureLocalMemoryAndWorkers(
     // Adjust quads for cl_half if necessary, though optimal_wg_size calculation might be complex
     // For simplicity, keeping the existing logic, but be mindful of sizeof(cl_half)
     std::vector<float> quads = {1.0f, 1.0f*stride*(filter_width+filter_height),
-        1.0f*(filter_width*filter_height) - (1.0f*max_local_mem_size)/sizeof(cl_half)}; // Changed sizeof(float) to sizeof(cl_half)
+        1.0f*(filter_width*filter_height) - (1.0f*max_local_mem_size)/sizeof(unsigned char)}; // Changed sizeof(float) to sizeof(cl_half)
     double discriminant = static_cast<double>(quads[1])*quads[1] - 4.0*quads[0]*quads[2];
     int optimal_wg_size = 1;
     if (discriminant >= 0) { // Check if discriminant is non-negative before taking sqrt
@@ -97,7 +112,7 @@ void configureLocalMemoryAndWorkers(
     
     size_t tile_w_host = (local_wg_dim_x - 1) * stride + filter_width;
     size_t tile_h_host = (local_wg_dim_y - 1) * stride + filter_height;
-    size_t local_memory_size_bytes = tile_w_host * tile_h_host * sizeof(cl_half); // Changed sizeof(float) to sizeof(cl_half)
+    size_t local_memory_size_bytes = tile_w_host * tile_h_host * sizeof(unsigned char); // Changed sizeof(float) to sizeof(cl_half)
 
     global_work_size_x = ((output_width + local_wg_dim_x - 1) / local_wg_dim_x) * local_wg_dim_x;
     global_work_size_y = ((output_height + local_wg_dim_y - 1) / local_wg_dim_y) * local_wg_dim_y;

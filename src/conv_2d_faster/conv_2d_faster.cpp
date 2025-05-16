@@ -18,7 +18,9 @@ int main()
     try {
     /*------------------ INPUT ------------------*/
     FilePaths paths;
-    std::vector<cl_half> input_img, filter, output;
+    std::vector<unsigned char> input_img;
+    std::vector<float> filter; // Changed to float
+    std::vector<float> output; 
     int input_width, input_height, channel_count, 
         filter_width, filter_height, stride, output_width, output_height;
 
@@ -47,11 +49,11 @@ int main()
     /*------------------ set input/output vector ------------------*/
     cl::Buffer d_input, d_filter, d_output_buf;
     d_input = cl::Buffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                        sizeof(cl_half) * input_img.size(), const_cast<cl_half*>(input_img.data()));
+                        sizeof(unsigned char) * input_img.size(), const_cast<unsigned char*>(input_img.data()));
     d_filter = cl::Buffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                        sizeof(cl_half) * filter.size(), const_cast<cl_half*>(filter.data()));
+                        sizeof(float) * filter.size(), const_cast<float*>(filter.data())); // Use float for filter buffer
     d_output_buf = cl::Buffer(context, CL_MEM_READ_WRITE,
-                        sizeof(cl_half) * output.size(), nullptr);
+                        sizeof(float) * output.size(), nullptr); // Use float for output buffer
     kernel.setArg(0, d_input);
     kernel.setArg(1, d_filter);
     kernel.setArg(2, d_output_buf);
@@ -67,14 +69,12 @@ int main()
     
     std::cout << "finished conv2d fast\n";
     
-    queue.enqueueReadBuffer(d_output_buf, CL_TRUE, 0, sizeof(cl_half) * output.size(), output.data());
+    queue.enqueueReadBuffer(d_output_buf, CL_TRUE, 0, sizeof(float) * output.size(), output.data()); // Read float data
     std::cout << "finished reading output off vram\n";
 
     // ------------------ result -------------------------
-    // Before writing to PNG, convert cl_half output back to float if writePngImage expects float
-    std::vector<float> float_output(output.size());
-    std::transform(output.begin(), output.end(), float_output.begin(), [](cl_half val) { return static_cast<float>(val); });
-    writePngImage(float_output, output_width, output_height, channel_count, paths.outputImagePath);
+    // Output is already std::vector<float>, no need for std::transform to float_output
+    writePngImage(output, output_width, output_height, channel_count, paths.outputImagePath);
 
     // ------------------ try catch -------------------------
     } catch (cl::Error const &e) {
