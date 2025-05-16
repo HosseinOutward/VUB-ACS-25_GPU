@@ -1,43 +1,47 @@
 __kernel void kernel_app(
-    __global const float* input,
-    __global const float* filter,
-    __global float* output,
-    __global const int* other_ints
+    __global const unsigned char* input_img,   // Changed to unsigned char
+    __global const float* filter_k,            // Changed to float
+    __global float* output_img,              // Changed to float
+    const int stride,
+    const int input_width,
+    const int input_height,
+    const int filter_width,
+    const int filter_height,
+    const int channel_count,
+    const int output_w,
+    const int output_h
 )
 {
-    int stride, input_width, input_height, filter_width, filter_height, channel_count;
-    stride = other_ints[0];
-    input_width = other_ints[1];
-    input_height = other_ints[2];
-    filter_width = other_ints[3];
-    filter_height = other_ints[4];
-    channel_count = other_ints[5];
-    
     // Get output coordinates and channel
     int out_x = get_global_id(0);
     int out_y = get_global_id(1);
     int channel = get_global_id(2);
     
-    // Compute output dimensions
-    int output_width = (input_width - filter_width) / stride + 1;
-    int output_height = (input_height - filter_height) / stride + 1;
-    
-    // Check if within bounds (including channel)
-    if (out_x < output_width && out_y < output_height && channel < channel_count) {
+    // Using output_w and output_h passed as arguments for bounds checking
+    if (out_x < output_w && out_y < output_h && channel < channel_count) {
         float sum = 0.0f;
         
         // Perform convolution for the current channel
-        for (int fy = 0; fy < filter_height; fy++)
+        for (int fy = 0; fy < filter_height; fy++) {
             for (int fx = 0; fx < filter_width; fx++) {
                 int in_x = out_x * stride + fx;
                 int in_y = out_y * stride + fy;
+                
                 int input_idx = (channel * input_height * input_width) + (in_y * input_width + in_x);
                 int filter_idx = fy * filter_width + fx;
-                sum += input[input_idx] * filter[filter_idx];
+
+                // Read uchar from input_img, convert to float (0.0f - 1.0f)
+                float input_val = (float)input_img[input_idx] / 255.0f;
+                // filter_k is already float, no conversion needed for filter_val
+                float filter_val = filter_k[filter_idx]; 
+                
+                sum += input_val * filter_val;
             }
+        }
         
-        // Write result to output, considering channels
-        int output_idx = (channel * output_height * output_width) + (out_y * output_width + out_x);
-        output[output_idx] = sum;
+        // Write result to output (sum is already float)
+        int output_idx = (channel * output_h * output_w) + (out_y * output_w + out_x);
+        output_img[output_idx] = sum;
     }
 }
+
