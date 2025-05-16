@@ -3,6 +3,7 @@ import re
 import matplotlib.pyplot as plt
 import os
 import numpy as np
+import json # Added for JSON output
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKSPACE_ROOT = os.path.dirname(SCRIPT_DIR)
@@ -158,7 +159,7 @@ def plot_timings(timings_data):  # Removed tested_batch_count argument
     if overall_time_ms > 0:
         y_category_definitions.append(("Overall Processing", 'single', overall_time_ms, 'purple'))
 
-    # Filter Write Queue Time
+    # Filter Write Time
     filter_write_queue_ms = ns_to_ms(float(timings_data.get("FilterWriteQueueTime_ns", 0)))
     if filter_write_queue_ms > 0:
         y_category_definitions.append(("Filter Write (Queue)", 'single', filter_write_queue_ms, 'lightskyblue'))
@@ -318,48 +319,41 @@ def plot_timings(timings_data):  # Removed tested_batch_count argument
     plt.show()
 
 
+def save_timings_to_file(timings_data, filename="analysis_timings.json"):
+    """Saves the timings data to a JSON file."""
+    filepath = os.path.join(SCRIPT_DIR, filename)
+    try:
+        with open(filepath, 'w') as f:
+            json.dump(timings_data, f, indent=4)
+        print(f"Timings data saved to {filepath}")
+    except IOError as e:
+        print(f"Error saving timings data to {filepath}: {e}")
+
+
 def main(batch_count_arg: int = 10, executable_name: str = "conv_2d_faster_analysis1.exe"):
     executable_path = os.path.join(WORKSPACE_ROOT, "bin", executable_name)
+
+    if not os.path.exists(executable_path):
+        print(f"Error: Executable not found at {executable_path}")
+        return
+
+    print(f"Running analysis with {executable_name} for {batch_count_arg} batches...")
     cpp_output = run_cpp_analysis(executable_path, batch_count_arg, WORKSPACE_ROOT)
-    parsed_timings = parse_output(cpp_output)
+    
+    if not cpp_output:
+        print("No output from C++ executable.")
+        return
 
-    print(f"\\n--- Parsed Timings for {executable_name} (Batch Count: {batch_count_arg}) ---")
-    actual_batches = parsed_timings.get("ActualBatchCount", 0)
-    print(f"  Actual Batches by C++: {actual_batches}")
-    timer_res = parsed_timings.get("DeviceProfilingTimerResolution_ns", "N/A")
-    print(f"  Device Profiling Timer Resolution: {timer_res} ns")
+    timings_data = parse_output(cpp_output)
+    
+    if not timings_data:
+        print("Failed to parse output.")
+        return
 
-    filter_write_queue_ns =int(parsed_timings.get("FilterWriteQueueTime_ns", 0))
-    filter_write_exec_ns = int(parsed_timings.get("FilterWriteExecTime_ns", 0))
-    print(f"  Filter Write (Queue): {ns_to_ms(filter_write_queue_ns):.3f} ms ({filter_write_queue_ns} ns)")
-    print(f"  Filter Write (Exec): {ns_to_ms(filter_write_exec_ns):.3f} ms ({filter_write_exec_ns} ns)")
+    # Save the parsed timings data
+    save_timings_to_file(timings_data, f"{executable_name}_batch_{batch_count_arg}_timings.json")
 
-    for i in range(actual_batches):
-        input_w_queue_ns = parsed_timings["batch_input_write_queue_ns"][i]
-        input_w_exec_ns = parsed_timings["batch_input_write_exec_ns"][i]
-        input_w_overall_ms = parsed_timings["batch_input_write_overall_ms"][i] # New
-        kernel_e_queue_ns = parsed_timings["batch_kernel_queue_ns"][i]
-        kernel_e_exec_ns = parsed_timings["batch_kernel_exec_ns"][i]
-        kernel_e_overall_ms = parsed_timings["batch_kernel_overall_ms"][i] # New
-        read_t_queue_ns = parsed_timings["batch_read_output_queue_ns"][i]
-        read_t_exec_ns = parsed_timings["batch_read_output_exec_ns"][i]
-        read_t_overall_ms = parsed_timings["batch_read_output_overall_ms"][i] # New
-        print(f"  Batch {i}:")
-        print(f"    Input Write (Queue): {ns_to_ms(input_w_queue_ns):.3f} ms ({input_w_queue_ns} ns)")
-        print(f"    Input Write (Exec): {ns_to_ms(input_w_exec_ns):.3f} ms ({input_w_exec_ns} ns)")
-        print(f"    Input Write (Overall Batch): {-input_w_overall_ms:.3f} ms") # New
-        print(f"    Kernel (Queue): {ns_to_ms(kernel_e_queue_ns):.3f} ms ({kernel_e_queue_ns} ns)")
-        print(f"    Kernel (Exec): {ns_to_ms(kernel_e_exec_ns):.3f} ms ({kernel_e_exec_ns} ns)")
-        print(f"    Kernel (Overall Batch): {-kernel_e_overall_ms:.3f} ms") # New
-        print(f"    Read Output (Queue): {ns_to_ms(read_t_queue_ns):.3f} ms ({read_t_queue_ns} ns)")
-        print(f"    Read Output (Exec): {ns_to_ms(read_t_exec_ns):.3f} ms ({read_t_exec_ns} ns)")
-        print(f"    Read Output (Overall Batch): {-read_t_overall_ms:.3f} ms") # New
-
-    overall_ms = float(parsed_timings.get("OverallBatchProcessingTime_ms", 0))
-    print(f"  Overall C++ Processing: {overall_ms:.3f} ms")
-    print("--------------------------\n")
-
-    plot_timings(parsed_timings)  # Removed batch_count_arg
+    plot_timings(timings_data)
 
 
 if __name__ == "__main__":

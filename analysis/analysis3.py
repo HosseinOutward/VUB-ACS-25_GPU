@@ -1,7 +1,7 @@
 import os
 import subprocess
 import matplotlib.pyplot as plt
-import numpy as np
+import json # Added for JSON output
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKSPACE_ROOT = os.path.dirname(SCRIPT_DIR)
@@ -93,6 +93,21 @@ def plot_timings(concurrent_run_data, sequential_run_data, batch_sizes_used):
     plt.tight_layout()
     plt.show()
 
+def save_comparison_data_to_file(concurrent_data, sequential_data, batch_sizes, filename="analysis3_comparison_timings.json"):
+    """Saves the comparison data to a JSON file."""
+    data_to_save = {
+        "batch_sizes_tested": batch_sizes,
+        "concurrent_design_runs": concurrent_data,
+        "sequential_design_runs": sequential_data
+    }
+    filepath = os.path.join(SCRIPT_DIR, filename)
+    try:
+        with open(filepath, 'w') as f:
+            json.dump(data_to_save, f, indent=4)
+        print(f"Comparison data saved to {filepath}")
+    except IOError as e:
+        print(f"Error saving comparison data to {filepath}: {e}")
+
 
 def main():
     concurrent_exe_name = "conv_2d_faster_analysis2.exe"
@@ -156,6 +171,7 @@ def main():
 
 
     plot_timings(concurrent_run_data, sequential_run_data, processed_batch_sizes)
+    save_comparison_data_to_file(concurrent_run_data, sequential_run_data, processed_batch_sizes)
 
 
 if __name__ == "__main__":

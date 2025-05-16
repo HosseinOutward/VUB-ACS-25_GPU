@@ -2,6 +2,7 @@ import os
 import subprocess
 import matplotlib.pyplot as plt
 import numpy as np
+import json # Added for JSON output
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKSPACE_ROOT = os.path.dirname(SCRIPT_DIR)
@@ -97,6 +98,20 @@ def plot_timings(kernel_size_data, target_batch_count):
     plt.tight_layout()
     plt.show()
 
+def save_kernel_size_data_to_file(kernel_size_data, fixed_batch_count, filename_prefix="analysis4_kernel_size"):
+    """Saves the kernel size timing data to a JSON file."""
+    filename = f"{filename_prefix}_batch_{fixed_batch_count}_timings.json"
+    filepath = os.path.join(SCRIPT_DIR, filename)
+    data_to_save = {
+        "fixed_batch_count": fixed_batch_count,
+        "kernel_size_runs": kernel_size_data
+    }
+    try:
+        with open(filepath, 'w') as f:
+            json.dump(data_to_save, f, indent=4)
+        print(f"Kernel size data saved to {filepath}")
+    except IOError as e:
+        print(f"Error saving kernel size data to {filepath}: {e}")
 
 def main():
     # Use the analysis4 executable, assuming it's the one modified for kernel size input
@@ -153,6 +168,7 @@ def main():
             print(f"    Skipping this data point for kernel size {kernel_size}.")
 
     plot_timings(all_run_data, fixed_batch_count)
+    save_kernel_size_data_to_file(all_run_data, fixed_batch_count, cpp_executable_name.replace('.exe', ''))
 
 
 if __name__ == "__main__":

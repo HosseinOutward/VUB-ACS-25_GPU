@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import os
 import numpy as np
 import pandas as pd # Added for DataFrame
+import json # Added for JSON output
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKSPACE_ROOT = os.path.dirname(SCRIPT_DIR)
@@ -132,6 +133,16 @@ def plot_timings(all_run_data):
     plt.tight_layout()
     plt.show()
 
+def save_all_run_data_to_file(all_run_data, filename="analysis2_all_runs_timings.json"):
+    """Saves all run data to a JSON file."""
+    filepath = os.path.join(SCRIPT_DIR, filename)
+    try:
+        with open(filepath, 'w') as f:
+            json.dump(all_run_data, f, indent=4)
+        print(f"All run data saved to {filepath}")
+    except IOError as e:
+        print(f"Error saving all run data to {filepath}: {e}")
+
 
 def main(executable_name: str = "conv_2d_faster_analysis1.exe"):
     # Define batch sizes: start small, then increase more rapidly towards max
@@ -178,6 +189,7 @@ def main(executable_name: str = "conv_2d_faster_analysis1.exe"):
         print("-----------------------------------------------------")
 
     plot_timings(all_run_data)
+    save_all_run_data_to_file(all_run_data, f"{executable_name}_all_batches_timings.json")
 
 
 if __name__ == "__main__":
