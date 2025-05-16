@@ -1,7 +1,9 @@
+#pragma OPENCL EXTENSION cl_khr_fp16 : enable
+
 __kernel void kernel_app(
-    __global const float* input_img,
-    __global const float* filter_k,
-    __global float* output_img,
+    __global const half* input_img,
+    __global const half* filter_k,
+    __global half* output_img,
     const int stride,
     const int input_w,
     const int input_h,
@@ -12,7 +14,7 @@ __kernel void kernel_app(
     const int tile_h,
     const int output_w,
     const int output_h,
-    __local float* input_tile
+    __local half* input_tile
 )
 {
     // Global and local IDs
@@ -39,7 +41,7 @@ __kernel void kernel_app(
                 int global_input_idx = (ch * input_h * input_w) + (current_global_y * input_w + current_global_x);
                 input_tile[tile_idx] = input_img[global_input_idx];
             } else {
-                input_tile[tile_idx] = 0.0f; // Pad with zeros for out-of-bounds
+                input_tile[tile_idx] = 0.0h; // Pad with zeros for out-of-bounds
             }
         }
     }
@@ -49,7 +51,7 @@ __kernel void kernel_app(
     // __________________ conv cal __________________
     // Check if current global work-item is within output image bounds
     if (gix < output_w && giy < output_h && ch < channels) {
-        float sum = 0.0f;
+        half sum = 0.0h;
 
         // Top-left position for convolution within the local tile
         int local_conv_start_x = lix * stride;

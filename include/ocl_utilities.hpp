@@ -33,7 +33,8 @@ inline cl::Context makeContextAndQueue(cl::CommandQueue* outQueue, cl::Device* o
     std::cout << "Using device: " << device.getInfo<CL_DEVICE_NAME>() << std::endl;
 
     cl::Context context({device});
-    cl::CommandQueue queue(context, device);
+    // Enable profiling for the command queue
+    cl::CommandQueue queue(context, device, CL_QUEUE_PROFILING_ENABLE);
 
     if (outQueue)  *outQueue  = queue;
     if (outDevice) *outDevice = device;
@@ -60,8 +61,8 @@ std::string loadKernelSource() {
     }
 
     // if has _HTP, remove it
-    if (exec_file_name.find("_HTP") != std::string::npos) {
-        exec_file_name.erase(exec_file_name.find("_HTP"), 4);
+    if (exec_file_name.find("_analysis") != std::string::npos) {
+        exec_file_name.erase(exec_file_name.find("_analysis"), 10);
     }
 
     // Construct the full path to the kernel file
