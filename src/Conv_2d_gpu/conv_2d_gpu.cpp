@@ -10,6 +10,7 @@
 #include <ocl_utilities.hpp>
 #include <cmath>
 #include "conv_2d_gpu.hpp"
+#include <direct.h>
 
 
 void meow(char* argv[])
@@ -83,17 +84,30 @@ void meow(char* argv[])
     cl::NDRange global_dims(global_work_size_x, global_work_size_y, channel_count);
 
     /*------------------ set input/output vector ------------------*/
+    int batch_repeats = std::stoi(argv[4]);
+    std::vector<cl::Buffer> d_input(batch_repeats), d_output_buf(batch_repeats);
+
+auto time_overall_start = std::chrono::high_resolution_clock::now();
+std::vector<std::chrono::microseconds> time_per_run(batch_repeats);
+std::vector<std::chrono::microseconds> time_per_read(batch_repeats);
+std::vector<std::chrono::microseconds> time_per_exec(batch_repeats);
+std::vector<std::chrono::microseconds> time_per_write(batch_repeats);
+
     cl::Buffer d_filter = cl::Buffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
                         sizeof(float) * filter.size(), const_cast<float*>(filter.data()));
     kernel.setArg(2, d_filter);
 
-    int batch_repeats = std::stoi(argv[4]);
-    std::vector<cl::Buffer> d_input(batch_repeats), d_output_buf(batch_repeats);
-
+    // time for each each run
     for (int i = 0; i < batch_repeats; ++i) {
+auto run_start = std::chrono::high_resolution_clock::now();
+auto read_start = std::chrono::high_resolution_clock::now();
+
         d_input[i] = cl::Buffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
                         sizeof(unsigned char) * input_batch.size(), 
                         const_cast<unsigned char*>(input_batch.data()));
+
+auto read_end = std::chrono::high_resolution_clock::now();
+time_per_read[i] = std::chrono::duration_cast<std::chrono::microseconds>(read_end - read_start);
 
         d_output_buf[i] = cl::Buffer(context, CL_MEM_READ_WRITE,
                             sizeof(float) * output.size(), nullptr);
@@ -102,18 +116,33 @@ void meow(char* argv[])
         kernel.setArg(1, d_output_buf[i]);
 
         // enqueue the kernel
+auto exec_start = std::chrono::high_resolution_clock::now();
+
         queue.enqueueNDRangeKernel(kernel, cl::NullRange, global_dims, local_dims);
+
+auto exec_end = std::chrono::high_resolution_clock::now();
+time_per_exec[i] = std::chrono::duration_cast<std::chrono::microseconds>(exec_end - exec_start);
+
+auto run_end = std::chrono::high_resolution_clock::now();
+time_per_run[i] = std::chrono::duration_cast<std::chrono::microseconds>(run_end - run_start);
     }
 
     queue.finish();
 
     for (int i = 0; i < batch_repeats; ++i) {
+auto write_start = std::chrono::high_resolution_clock::now();
+
         queue.enqueueReadBuffer(d_output_buf[i], CL_FALSE, 0, 
             sizeof(float) * output.size(), output.data());
+
+auto write_end = std::chrono::high_resolution_clock::now();
+time_per_write[i] = std::chrono::duration_cast<std::chrono::microseconds>(write_end - write_start);
     }
 
     queue.finish();
 
+auto time_overall_end = std::chrono::high_resolution_clock::now();
+auto time_overall = std::chrono::duration_cast<std::chrono::microseconds>(time_overall_end - time_overall_start);
 
     // ------------------ result -------------------------
     if (strcmp(argv[5], "null") == 0)
@@ -123,9 +152,32 @@ void meow(char* argv[])
         output.resize(static_cast<size_t>(output_width) * output_height * 3);
         writePngImage(output, output_width, output_height, 3, std::string("data/out/")+argv[5]);
     }
+
+    // Print timing results for python
+std::cout << "Overall_time: " << time_overall.count() << std::endl;
+for (int i = 0; i < batch_repeats; ++i) {
+    std::cout << "Run_time_" << i << ": " << time_per_run[i].count() << std::endl;
+    std::cout << "Read_time_" << i << ": " << time_per_read[i].count() << std::endl;
+    std::cout << "Exec_time_" << i << ": " << time_per_exec[i].count() << std::endl;
+    std::cout << "Write_time_" << i << ": " << time_per_write[i].count() << std::endl;
+}
+
 }
 
 int main(int argc, char* argv[]) {
+    // print working directory
+    char cwd[1024];
+    if (getcwd(cwd, sizeof(cwd)) != NULL) {
+        std::cout << "Current working dir: " << cwd << std::endl;
+    } else {
+        perror("getcwd() error");
+        return 1;
+    }
+    // print executable name
+    char buffer[MAX_PATH];
+    GetModuleFileNameA(NULL, buffer, MAX_PATH);
+    std::string fullPath(buffer);
+
     try {
         if (argc == 1) {
             char** new_argv = new char*[5];
@@ -133,7 +185,7 @@ int main(int argc, char* argv[]) {
             new_argv[1] = (char*)"input_lena.png";
             new_argv[2] = (char*)"kernel_edge_3c.txt";
             new_argv[3] = (char*)"true";
-            new_argv[4] = (char*)"1";
+            new_argv[4] = (char*)"2";
             new_argv[5] = (char*)"output.png";
             meow(new_argv);
         } else
