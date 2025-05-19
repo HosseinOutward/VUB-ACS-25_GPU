@@ -105,10 +105,15 @@ void meow(char* argv[])
         queue.enqueueNDRangeKernel(kernel, cl::NullRange, global_dims, local_dims);
     }
 
+    queue.finish();
+
     for (int i = 0; i < batch_repeats; ++i) {
         queue.enqueueReadBuffer(d_output_buf[i], CL_FALSE, 0, 
             sizeof(float) * output.size(), output.data());
     }
+
+    queue.finish();
+
 
     // ------------------ result -------------------------
     if (strcmp(argv[5], "null") == 0)
@@ -116,7 +121,7 @@ void meow(char* argv[])
     else{
         // only give the first 3 channels
         output.resize(static_cast<size_t>(output_width) * output_height * 3);
-        writePngImage(output, output_width, output_height, 3, argv[5]);
+        writePngImage(output, output_width, output_height, 3, std::string("data/out/")+argv[5]);
     }
 }
 
@@ -131,7 +136,6 @@ int main(int argc, char* argv[]) {
             new_argv[4] = (char*)"1";
             new_argv[5] = (char*)"output.png";
             meow(new_argv);
-            delete[] new_argv;
         } else
             meow(argv);
     // ------------------ try catch -------------------------

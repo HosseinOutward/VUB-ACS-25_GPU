@@ -7,15 +7,16 @@ __kernel void kernel_app_local(
     const int stride,
     const int input_w,
     const int input_h,
+    const int channels,
     const int filter_w,
     const int filter_h,
     const int filter_channels,
-    const int channels,
     const int output_w,
     const int output_h,
     const int tile_w,
     const int tile_h,
-    __local unsigned char* input_tile
+    __local unsigned char* input_tile,
+    __local float* local_filter_k
 )
 {
     // Global and local IDs
@@ -46,36 +47,54 @@ __kernel void kernel_app_local(
             }
         }
     }
+    
+    // ________ load filter_k to local memory ________
+    int local_flat_idx = liy * get_local_size(0) + lix;
+    int local_wg_total_items = get_local_size(0) * get_local_size(1);
+
+    if (local_flat_idx < filter_w * filter_h)
+        local_filter_k[local_flat_idx] = filter_k[local_flat_idx];
+    
+    if (filter_w * filter_h < local_wg_total_items && 
+            local_flat_idx+local_wg_total_items < filter_w * filter_h)
+        local_filter_k[local_flat_idx+local_wg_total_items] = filter_k[local_flat_idx];
+    
+    if (filter_w * filter_h < 2 * local_wg_total_items && 
+            local_flat_idx == local_wg_total_items)
+        for (int i = 0; i < local_wg_total_items; i++)
+            local_filter_k[2 * local_wg_total_items + i] = filter_k[local_flat_idx];
+
 
     barrier(CLK_LOCAL_MEM_FENCE); // Synchronize work-items in the group
 
     // __________________ conv cal __________________
     // Check if current global work-item is within output image bounds
     if (gix < output_w && giy < output_h && ch < channels) {
-        float sum = 0.0f;
+        for (int fc = 0; fc < filter_channels; fc++) {
+            int local_conv_start_x = lix * stride;
+            int local_conv_start_y = liy * stride;
 
-        // Top-left position for convolution within the local tile
-        int local_conv_start_x = lix * stride;
-        int local_conv_start_y = liy * stride;
-
-        // Perform convolution using data from the local input_tile
-        for (int fy = 0; fy < filter_h; fy++) {
-            for (int fx = 0; fx < filter_w; fx++) {
-                int tile_access_x = local_conv_start_x + fx;
-                int tile_access_y = local_conv_start_y + fy;
-                
-                int current_tile_idx = tile_access_y * tile_w + tile_access_x;
-                int filter_idx = fy * filter_w + fx;
-                
-                float input_val = (float)input_tile[current_tile_idx] / 255.0f;
-                float filter_val = filter_k[filter_idx]; 
-                sum += input_val * filter_val;
+            // Perform convolution using data from the local input_tile
+            float sum = 0.0f;
+            for (int fy = 0; fy < filter_h; fy++) {
+                for (int fx = 0; fx < filter_w; fx++) {
+                    int tile_access_x = local_conv_start_x + fx;
+                    int tile_access_y = local_conv_start_y + fy;
+                    
+                    int current_tile_idx = tile_access_y * tile_w + tile_access_x;
+                    int filter_idx = fy * filter_w + fx;
+                    
+                    float input_val = (float)input_tile[current_tile_idx] / 255.0f;
+                    float filter_val = local_filter_k[filter_idx]; 
+                    sum += input_val * filter_val;
+                }
             }
+            
+            // Write the result to the output image
+            int output_idx = (ch * output_h * output_w) + (giy * output_w + gix) 
+                        + (fc * output_w * output_h);
+            output_img[output_idx] = sum;
         }
-        
-        // Write the result to the output image
-        int output_idx = (ch * output_h * output_w) + (giy * output_w + gix);
-        output_img[output_idx] = sum;
     }
 }
 
@@ -86,10 +105,10 @@ __kernel void kernel_app(
     const int stride,
     const int input_width,
     const int input_height,
+    const int channel_count,
     const int filter_width,
     const int filter_height,
     const int filter_channels,
-    const int channel_count,
     const int output_w,
     const int output_h
 )
@@ -101,29 +120,32 @@ __kernel void kernel_app(
     
     // Using output_w and output_h passed as arguments for bounds checking
     if (out_x < output_w && out_y < output_h && channel < channel_count) {
-        float sum = 0.0f;
-        
-        // Perform convolution for the current channel
-        for (int fy = 0; fy < filter_height; fy++) {
-            for (int fx = 0; fx < filter_width; fx++) {
-                int in_x = out_x * stride + fx;
-                int in_y = out_y * stride + fy;
-                
-                int input_idx = (channel * input_height * input_width) + (in_y * input_width + in_x);
-                int filter_idx = (fy * filter_width) + (fx); //+ (channel * filter_width * filter_height);
+        for (int fc = 0; fc < filter_channels; fc++) {
+            float sum = 0.0f;
+            
+            // Perform convolution for the current channel
+            for (int fy = 0; fy < filter_height; fy++)
+                for (int fx = 0; fx < filter_width; fx++) {
+                    int in_x = out_x * stride + fx;
+                    int in_y = out_y * stride + fy;
+                    
+                    int input_idx = (channel * input_height * input_width) 
+                            + (in_y * input_width + in_x);
+                    int filter_idx = (fy * filter_width) + (fx) 
+                            + (filter_channels * filter_width * filter_height);
 
-                // Read uchar from input_img, convert to float (0.0f - 1.0f)
-                float input_val = (float)input_img[input_idx] / 255.0f;
-                // filter_k is already float, no conversion needed for filter_val
-                float filter_val = filter_k[filter_idx]; 
-                
-                sum += input_val * filter_val;
-            }
+                    float input_val = (float)input_img[input_idx] / 255.0f;
+                    // filter_k is already float, no conversion needed for filter_val
+                    float filter_val = filter_k[filter_idx]; 
+                    
+                    sum += input_val * filter_val;
+                }
+            
+            // Write result to output (sum is already float)
+            int output_idx = (channel * output_h * output_w) + (out_y * output_w + out_x)
+                    + (fc * output_w * output_h);
+            output_img[output_idx] = sum;
         }
-        
-        // Write result to output (sum is already float)
-        int output_idx = (channel * output_h * output_w) + (out_y * output_w + out_x);
-        output_img[output_idx] = sum;
     }
 }
 

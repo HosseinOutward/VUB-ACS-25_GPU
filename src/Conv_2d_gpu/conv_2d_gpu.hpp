@@ -54,6 +54,12 @@ bool isDimensionString(const std::string& str) {
     return str.find_first_not_of("0123456789,") == std::string::npos && 
            str.find(',') != std::string::npos;
 }
+inline unsigned char float_to_uchar_clamped(float val) {
+    val = val * 255.0f;
+    if (val < 0.0f) val = 0.0f;
+    if (val > 255.0f) val = 255.0f;
+    return static_cast<unsigned char>(val);
+}
 
 std::vector<int> parseDimensions(const std::string& str) {
     std::vector<int> dimensions;
@@ -81,7 +87,12 @@ std::vector<unsigned char> load_input_batch(int& input_width, int& input_height,
 std::vector<unsigned char> load_input_batch(const std::string& filename, int reps,
         int& input_width, int& input_height, int& channel_count) {
     std::vector<unsigned char> input_img;
-    readPngImage("data/in/"+filename, input_width, input_height, channel_count);
+    std::vector<float> temp;
+    temp=readPngImage("data/in/"+filename, input_width, input_height, channel_count);
+    input_img.resize(temp.size());
+    std::transform(temp.begin(), temp.end(), input_img.begin(), [](float val) { 
+        return float_to_uchar_clamped(val);
+    });
     
     std::vector<unsigned char> reps_input_img(
         static_cast<size_t>(input_width) * input_height * channel_count * reps);
@@ -108,14 +119,6 @@ std::vector<float> load_filter(const std::string& filename,
     std::vector<float> kernel_data = loadFilterFromFile("data/in/"+filename, 
         input_width, input_height, filter_channel);
     return kernel_data;
-}
-
-// Helper function to clamp values before casting to unsigned char
-inline unsigned char float_to_uchar_clamped(float val) {
-    val = val * 255.0f;
-    if (val < 0.0f) val = 0.0f;
-    if (val > 255.0f) val = 255.0f;
-    return static_cast<unsigned char>(val);
 }
 
 void loadInputs(
@@ -173,12 +176,12 @@ void initializeGPU(
     kernel.setArg(3, stride);
     kernel.setArg(4, input_width);
     kernel.setArg(5, input_height);
-    kernel.setArg(6, filter_width);
-    kernel.setArg(7, filter_height);
+    kernel.setArg(6, channel_count);
+    kernel.setArg(7, filter_width);
     kernel.setArg(8, filter_height);
     kernel.setArg(9, filter_channels);
     kernel.setArg(10, output_width);
-    kernel.setArg(1, output_height);
+    kernel.setArg(11, output_height);
 }
 
 
@@ -228,11 +231,13 @@ void configureLocalMemoryAndWorkers(
     
     size_t tile_w_host = (local_wg_dim_x - 1) * stride + filter_width;
     size_t tile_h_host = (local_wg_dim_y - 1) * stride + filter_height;
-    size_t local_memory_size_bytes = tile_w_host * tile_h_host * sizeof(unsigned char); // Changed sizeof(float) to sizeof(cl_half)
-
+    size_t local_memory_size_bytes = tile_w_host * tile_h_host * sizeof(unsigned char);
+    size_t local_filter_memory_size_bytes = static_cast<size_t>(filter_width) * filter_height * sizeof(float);
+    
     global_work_size_x = ((output_width + local_wg_dim_x - 1) / local_wg_dim_x) * local_wg_dim_x;
     global_work_size_y = ((output_height + local_wg_dim_y - 1) / local_wg_dim_y) * local_wg_dim_y;
     kernel.setArg(12, static_cast<int>(tile_w_host));
     kernel.setArg(13, static_cast<int>(tile_h_host));
     kernel.setArg(14, cl::Local(local_memory_size_bytes));
+    kernel.setArg(15, cl::Local(local_filter_memory_size_bytes));
 }
