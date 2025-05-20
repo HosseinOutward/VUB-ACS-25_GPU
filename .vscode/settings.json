@@ -48,6 +48,8 @@
         "conv_2d_simple": "cpp",
         "deque": "cpp",
         "forward_list": "cpp",
-        "queue": "cpp"
+        "queue": "cpp",
+        "chrono": "cpp",
+        "__string": "cpp"
     }
 }

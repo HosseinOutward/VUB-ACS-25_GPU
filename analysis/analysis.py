@@ -48,14 +48,22 @@ def clean_parsed(output_lines):
 
 
 if __name__ == "__main__":
-    output_lines = run_and_parse_conv_gpu([
-        "input_lena.png",
-        "kernel_edge_3c.txt",
-        "true",
-        "2",
-        "output.png"
-    ])
-    parsed_data = clean_parsed(output_lines)
+    output_lines_gpu = run_and_parse_conv_gpu([
+            "input_lena.png",
+            "kernel_edge_3c.txt",
+            "true",
+            "2",
+            "output_gpu.png"
+        ],
+        exe_filename = "conv_2d_gpu.exe")
+    parsed_data = clean_parsed(output_lines_gpu)
 
-    get_cpu_time = lambda x: parsed_data[x][0]
+    get_cpu_time = run_and_parse_conv_gpu([
+            "input_lena.png",
+            "kernel_edge_3c.txt",
+            "true",
+            "2",
+            "output.png"
+        ],
+        exe_filename = "conv_2d_sequential.exe")
 
