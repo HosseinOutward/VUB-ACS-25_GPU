@@ -210,54 +210,53 @@ void initializeGPU(
 // Helper function for local memory and worker configuration
 void configureLocalMemoryAndWorkers(
     const cl::Device& device, cl::Kernel& kernel, int stride, 
-    int filter_width, int filter_height, 
-    int output_width, int output_height,
+    int filter_width, int filter_height, int filter_channels,
+    int output_width, int output_height, int input_channels,
     size_t& local_wg_dim_x, size_t& local_wg_dim_y,
-    size_t& global_work_size_x, size_t& global_work_size_y
+    size_t& global_work_size_x, size_t& global_work_size_y, size_t& global_work_size_z
 ) {
-    size_t max_local_mem_size = device.getInfo<CL_DEVICE_LOCAL_MEM_SIZE>();
+    // _______________________________ calculate optimal local mem size _______________________________
+    size_t max_local_mem_size = device.getInfo<CL_DEVICE_LOCAL_MEM_SIZE>() 
+                - filter_width*filter_height*filter_channels*input_channels*sizeof(float);
+    
+    int optimal_wg_size;
+    std::vector<float> quads = {1.0f*stride*stride, 1.0f*stride*(filter_width+filter_height),
+        1.0f*(filter_width+1)/2*(filter_height+1)/2 - (1.0f*max_local_mem_size)/sizeof(unsigned char)/input_channels};
 
-    // Adjust quads for cl_half if necessary, though optimal_wg_size calculation might be complex
-    // For simplicity, keeping the existing logic, but be mindful of sizeof(cl_half)
-    std::vector<float> quads = {1.0f, 1.0f*stride*(filter_width+filter_height),
-        1.0f*(filter_width*filter_height) - (1.0f*max_local_mem_size)/sizeof(unsigned char)}; // Changed sizeof(float) to sizeof(cl_half)
     double discriminant = static_cast<double>(quads[1])*quads[1] - 4.0*quads[0]*quads[2];
-    int optimal_wg_size = 1;
-    if (discriminant >= 0) { // Check if discriminant is non-negative before taking sqrt
-        optimal_wg_size = 1 + static_cast<int>(
-            (-quads[1] + std::sqrt(discriminant)) / (2.0f * quads[0]));
-    } else {
-        // Handle the case where discriminant is negative, e.g., set a default optimal_wg_size
-        // Or log an error, or adjust parameters. For now, keeping it 1.
-        std::cerr << "Warning: Negative discriminant in worker configuration. Optimal WG size may not be ideal." << std::endl;
-    }
+    if (discriminant >= 0)
+        optimal_wg_size = 1 + static_cast<int>((-quads[1] + std::sqrt(discriminant)) / (2.0f * quads[0]));
+    else
+        std::cerr << "Warning: Negative discriminant." << std::endl;
 
     std::vector<size_t> max_item_sizes = device.getInfo<CL_DEVICE_MAX_WORK_ITEM_SIZES>();
-    if (!max_item_sizes.empty()) { // Ensure max_item_sizes is not empty
+    if (!max_item_sizes.empty())
         optimal_wg_size = std::min(optimal_wg_size, static_cast<int>(max_item_sizes[0]));
-    }
 
     size_t max_total_wg_size = device.getInfo<CL_DEVICE_MAX_WORK_GROUP_SIZE>();
     optimal_wg_size = std::min(optimal_wg_size, static_cast<int>(
             std::sqrt(static_cast<double>(max_total_wg_size))));
     
     // Ensure optimal_wg_size is at least 1 to prevent issues with local_wg_dim being 0
-    if (optimal_wg_size < 1) {
+    if (optimal_wg_size < 1)
         optimal_wg_size = 1;
-    }
 
     std::cout << "WI per WG: " << optimal_wg_size*optimal_wg_size << std::endl;
 
+    // _______________________________ allocate _______________________________
     local_wg_dim_x = optimal_wg_size;
     local_wg_dim_y = optimal_wg_size;
     
-    size_t tile_w_host = (local_wg_dim_x - 1) * stride + filter_width;
-    size_t tile_h_host = (local_wg_dim_y - 1) * stride + filter_height;
-    size_t local_memory_size_bytes = tile_w_host * tile_h_host * sizeof(unsigned char);
-    size_t local_filter_memory_size_bytes = static_cast<size_t>(filter_width) * filter_height * sizeof(float);
-    
     global_work_size_x = ((output_width + local_wg_dim_x - 1) / local_wg_dim_x) * local_wg_dim_x;
     global_work_size_y = ((output_height + local_wg_dim_y - 1) / local_wg_dim_y) * local_wg_dim_y;
+    global_work_size_z = filter_channels;
+    
+    size_t tile_w_host = local_wg_dim_x * stride + (filter_height+1)/2;
+    size_t tile_h_host = local_wg_dim_y * stride + (filter_height+1)/2;
+    size_t local_memory_size_bytes = tile_w_host * tile_h_host * input_channels * sizeof(unsigned char);
+    size_t local_filter_memory_size_bytes = static_cast<size_t>(filter_width) * 
+            filter_height * input_channels * filter_channels * sizeof(float);
+
     kernel.setArg(12, static_cast<int>(tile_w_host));
     kernel.setArg(13, static_cast<int>(tile_h_host));
     kernel.setArg(14, cl::Local(local_memory_size_bytes));
@@ -278,7 +277,6 @@ void prep_and_run(char* argv[],
         filter_width, filter_height, filter_count;
 
     // Load batch
-    int img_c_reps = 1;
     if (isDimensionString(argv[1])) {
         std::vector<int> d = parseDimensions(argv[1]);
         input_width = d[0];
@@ -288,7 +286,7 @@ void prep_and_run(char* argv[],
     } else
         input_img = load_input_img(argv[1], input_width, input_height, channel_count); // (width, height, channels, reps)
 
-    img_c_reps = std::stoi(argv[7]);
+    int img_c_reps = std::stoi(argv[7]);
     input_batch = repeat_to_make_batch(input_img, img_c_reps, input_width, input_height, channel_count);
 
     // Load filter

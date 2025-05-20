@@ -48,10 +48,10 @@ int main(int argc, char* argv[]) {
     default_argv[2] = (char*)
         "kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt"; // kernel file (fw fh img_c fc)
         // "kernel_same_1.txt,kernel_same_2.txt,kernel_same_3.txt";
-    default_argv[3] = (char*)"1"; // cpu: threads --- gpu: local mem
-    default_argv[4] = (char*)"2"; // simulated batch size
+    default_argv[3] = (char*)"0"; // cpu: threads --- gpu: local mem
+    default_argv[4] = (char*)"2"; // batch counts (w h c batch_size)
     default_argv[5] = (char*)"output_seq.png"; // output file
     default_argv[6] = (char*)"2"; // stride
-    default_argv[7] = (char*)"10"; // batch size (w h c batch_size)
+    default_argv[7] = (char*)"10"; // simulated single batch size 
     return replace_argv(argc, argv, default_argv, run);
 }

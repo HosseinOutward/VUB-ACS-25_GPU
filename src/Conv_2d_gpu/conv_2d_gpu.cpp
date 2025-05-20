@@ -30,24 +30,29 @@ void run(char* argv[],
         filter_channels, output_width, output_height);
 
     /*------------------ local memory info ------------------*/
-    size_t global_work_size_x, global_work_size_y;
+    size_t global_work_size_x, global_work_size_y, global_work_size_z;
     global_work_size_x = output_width;
     global_work_size_y = output_height;
+    global_work_size_z = filter_channels;
 
     cl::NDRange local_dims = cl::NullRange;
     
     if (strcmp(argv[3], "true") == 0) {
+        std::cout << "Using local memory" << std::endl;
         size_t local_wg_dim_x, local_wg_dim_y;
         configureLocalMemoryAndWorkers(
             device, kernel, stride, 
-            filter_width, filter_height, output_width, output_height, 
-            local_wg_dim_x, local_wg_dim_y, global_work_size_x, global_work_size_y
+            filter_width, filter_height, filter_channels,
+            output_width, output_height, channel_count,
+            local_wg_dim_x, local_wg_dim_y, 
+            global_work_size_x, global_work_size_y, global_work_size_z
         );
         
-        local_dims = cl::NDRange(local_wg_dim_x, local_wg_dim_y, 1);
-    }
+        local_dims = cl::NDRange(local_wg_dim_x, local_wg_dim_y);
+    } else
+        std::cout << "no local memory" << std::endl;
 
-    cl::NDRange global_dims(global_work_size_x, global_work_size_y);
+    cl::NDRange global_dims(global_work_size_x, global_work_size_y, global_work_size_z);
 
     /*------------------ set input/output vector ------------------*/
     int batch_repeats = std::stoi(argv[4]);
@@ -95,7 +100,7 @@ time_per_run[i] = std::chrono::duration_cast<std::chrono::microseconds>(run_end 
 
     queue.finish();
 
-for (int i = 0; i < batch_repeats; ++i) {
+    for (int i = 0; i < batch_repeats; ++i) {
 auto write_start = std::chrono::high_resolution_clock::now();
 
         queue.enqueueReadBuffer(d_output_buf[i], CL_FALSE, 0, 
@@ -103,7 +108,7 @@ auto write_start = std::chrono::high_resolution_clock::now();
 
 auto write_end = std::chrono::high_resolution_clock::now();
 time_per_write[i] = std::chrono::duration_cast<std::chrono::microseconds>(write_end - write_start);
-}
+    }
 
     queue.finish();
 
@@ -129,10 +134,10 @@ int main(int argc, char* argv[]) {
     default_argv[2] = (char*)
         "kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt"; // kernel file (fw fh img_c fc)
         // "kernel_same_1.txt,kernel_same_2.txt,kernel_same_3.txt";
-    default_argv[3] = (char*)"false"; // cpu: threads --- gpu: local mem
-    default_argv[4] = (char*)"2"; // simulated batch size
+    default_argv[3] = (char*)"true"; // cpu: threads --- gpu: local mem
+    default_argv[4] = (char*)"2"; // batch counts (w h c batch_size)
     default_argv[5] = (char*)"output_gpu.png"; // output file
     default_argv[6] = (char*)"2"; // stride
-    default_argv[7] = (char*)"10"; // batch size (w h c batch_size)
+    default_argv[7] = (char*)"10"; // simulated single batch size 
     return replace_argv(argc, argv, default_argv, run);
 }
