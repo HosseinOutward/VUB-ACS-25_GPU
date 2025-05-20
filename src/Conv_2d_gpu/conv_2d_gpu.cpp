@@ -58,20 +58,27 @@ void run(char* argv[],
     int batch_repeats = std::stoi(argv[4]);
     std::vector<cl::Buffer> d_input(batch_repeats), d_output_buf(batch_repeats);
 
-auto time_overall_start = std::chrono::high_resolution_clock::now();
-std::vector<std::chrono::microseconds> time_per_run(batch_repeats);
+std::vector<std::chrono::microseconds> time_per_batch(batch_repeats);
 std::vector<std::chrono::microseconds> time_per_read(batch_repeats);
 std::vector<std::chrono::microseconds> time_per_exec(batch_repeats);
 std::vector<std::chrono::microseconds> time_per_write(batch_repeats);
+
+std::vector<std::chrono::microseconds> time_start_read(batch_repeats);
+std::vector<std::chrono::microseconds> time_start_exec(batch_repeats);
+std::vector<std::chrono::microseconds> time_start_write(batch_repeats);
+
+auto time_overall_start = std::chrono::high_resolution_clock::now();
 
     cl::Buffer d_filter = cl::Buffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
                         sizeof(float) * filter.size(), const_cast<float*>(filter.data()));
     kernel.setArg(2, d_filter);
 
     // time for each each run
+
     for (int i = 0; i < batch_repeats; ++i) {
 auto run_start = std::chrono::high_resolution_clock::now();
 auto read_start = std::chrono::high_resolution_clock::now();
+time_start_read[i] = std::chrono::duration_cast<std::chrono::microseconds>(read_start-time_overall_start);
 
         d_input[i] = cl::Buffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
                         sizeof(unsigned char) * input_batch.size(), 
@@ -88,6 +95,7 @@ time_per_read[i] = std::chrono::duration_cast<std::chrono::microseconds>(read_en
 
         // enqueue the kernel
 auto exec_start = std::chrono::high_resolution_clock::now();
+time_start_exec[i] = std::chrono::duration_cast<std::chrono::microseconds>(exec_start - time_overall_start);
 
         queue.enqueueNDRangeKernel(kernel, cl::NullRange, global_dims, local_dims);
 
@@ -95,13 +103,14 @@ auto exec_end = std::chrono::high_resolution_clock::now();
 time_per_exec[i] = std::chrono::duration_cast<std::chrono::microseconds>(exec_end - exec_start);
 
 auto run_end = std::chrono::high_resolution_clock::now();
-time_per_run[i] = std::chrono::duration_cast<std::chrono::microseconds>(run_end - run_start);
+time_per_batch[i] = std::chrono::duration_cast<std::chrono::microseconds>(run_end - run_start);
     }
 
     queue.finish();
 
     for (int i = 0; i < batch_repeats; ++i) {
 auto write_start = std::chrono::high_resolution_clock::now();
+time_start_write[i] = std::chrono::duration_cast<std::chrono::microseconds>(write_start-time_overall_start);
 
         queue.enqueueReadBuffer(d_output_buf[i], CL_FALSE, 0, 
             sizeof(float) * output.size(), output.data());
@@ -119,10 +128,14 @@ auto time_overall = std::chrono::duration_cast<std::chrono::microseconds>(time_o
     // Print timing results for python
 std::cout << "Overall_time: " << time_overall.count() << std::endl;
 for (int i = 0; i < batch_repeats; ++i) {
-std::cout << "Run_time_" << i << ": " << time_per_run[i].count() << std::endl;
+std::cout << "Batch_time_" << i << ": " << time_per_batch[i].count() << std::endl;
 std::cout << "Read_time_" << i << ": " << time_per_read[i].count() << std::endl;
 std::cout << "Exec_time_" << i << ": " << time_per_exec[i].count() << std::endl;
 std::cout << "Write_time_" << i << ": " << time_per_write[i].count() << std::endl;
+
+std::cout << "Start_read_" << i << ": " << time_start_read[i].count() << std::endl;
+std::cout << "Start_exec_" << i << ": " << time_start_exec[i].count() << std::endl;
+std::cout << "Start_write_" << i << ": " << time_start_exec[i].count() << std::endl;
 }
 
 }
