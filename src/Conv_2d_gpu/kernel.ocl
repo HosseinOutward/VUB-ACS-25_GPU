@@ -1,5 +1,12 @@
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
 
+inline int index3d(int z, int y, int x, int height, int width) {
+    return z * (height) * (width) + y * (width) + x;
+}
+inline int index4d(int k, int z, int y, int x, int depth, int height, int width) {
+    return k * (depth) * (height) * (width) + index3d(z, y, x, height, width);
+}
+
 __kernel void kernel_app_local(
     __global const unsigned char* input_img,
     __global float* output_img,
@@ -99,53 +106,35 @@ __kernel void kernel_app_local(
 }
 
 __kernel void kernel_app(
-    __global const unsigned char* input_img,
-    __global float* output_img,
-    __global const float* filter_k,
+    __global const unsigned char* in, // (w h img_c)
+    __global float* out, // (ow oh fc)
+    __global const float* filt, // (fw fh img_c fc)
     const int stride,
-    const int input_width,
-    const int input_height,
+    const int in_w,
+    const int in_h,
     const int channel_count,
-    const int filter_width,
-    const int filter_height,
-    const int filter_channels,
-    const int output_w,
-    const int output_h
+    const int filt_w,
+    const int filt_h,
+    const int filt_c,
+    const int out_w,
+    const int out_h
 )
 {
-    // Get output coordinates and channel
     int out_x = get_global_id(0);
     int out_y = get_global_id(1);
-    int channel = get_global_id(2);
-    
-    // Using output_w and output_h passed as arguments for bounds checking
-    if (out_x < output_w && out_y < output_h && channel < channel_count) {
-        for (int fc = 0; fc < filter_channels; fc++) {
-            float sum = 0.0f;
-            
-            // Perform convolution for the current channel
-            for (int fy = 0; fy < filter_height; fy++)
-                for (int fx = 0; fx < filter_width; fx++) {
-                    int in_x = out_x * stride + fx;
-                    int in_y = out_y * stride + fy;
-                    
-                    int input_idx = (channel * input_height * input_width) 
-                            + (in_y * input_width + in_x);
-                    int filter_idx = (fy * filter_width) + (fx) 
-                            + (filter_channels * filter_width * filter_height);
 
-                    float input_val = (float)input_img[input_idx] / 255.0f;
-                    // filter_k is already float, no conversion needed for filter_val
-                    float filter_val = filter_k[filter_idx]; 
-                    
-                    sum += input_val * filter_val;
+    for (int fc = 0; fc < filt_c; ++fc) {
+        float sum = 0.0f;
+
+        for (int in_c = 0; in_c < channel_count; ++in_c)
+            for (int filt_y = 0; filt_y < filt_h; ++filt_y)
+                for (int filt_x = 0; filt_x < filt_w; ++filt_x) {
+                    int in_x = out_x * stride + filt_x;
+                    int in_y = out_y * stride + filt_y;
+                    sum += (float)in[index3d(in_c, in_y, in_x, in_h, in_w)] / 255.f *
+                            filt[index4d(fc, in_c, filt_y, filt_x, channel_count, filt_h, filt_w)];
                 }
-            
-            // Write result to output (sum is already float)
-            int output_idx = (channel * output_h * output_w) + (out_y * output_w + out_x)
-                    + (fc * output_w * output_h);
-            output_img[output_idx] = sum;
-        }
+
+        out[index3d(fc, out_y, out_x, out_h, out_w)] = sum;
     }
 }
-

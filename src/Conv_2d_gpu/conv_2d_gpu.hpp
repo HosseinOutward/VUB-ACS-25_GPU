@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <optional>
+#include <direct.h>
 #include "utilities.cpp"
 
 std::vector<float> loadFilterFromFile(const std::string& filename, 
