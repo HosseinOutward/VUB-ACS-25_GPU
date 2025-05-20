@@ -13,45 +13,11 @@
 #include <direct.h>
 
 
-void meow(char* argv[])
+void run(char* argv[], 
+        std::vector<unsigned char>& input_batch, int& input_width, int& input_height, int& channel_count,
+        std::vector<float>& filter, int& filter_width, int& filter_height, int& filter_channels, int& stride,
+        std::vector<float>& output, int& output_width, int& output_height)
 {
-    /*------------------ INPUT ------------------*/
-    std::vector<unsigned char> input_batch;
-    std::vector<float> filter, output; 
-    int input_width, input_height, channel_count, 
-        filter_width, filter_height, filter_channels;
-
-    // Load batch
-    int reps = 1;
-    if (isDimensionString(argv[1])) {
-        std::vector<int> d = parseDimensions(argv[1]);
-        input_width = d[0];
-        input_height = d[1];
-        channel_count = d[2];
-        input_batch = load_input_batch(d[0], d[1], d[2]);
-    } else {
-        reps = 10;
-        input_batch = load_input_batch(argv[1], reps, input_width, input_height, channel_count);
-        channel_count *= reps;
-    }
-
-    // Load filter
-    if (isDimensionString(argv[2])) {
-        std::vector<int> d = parseDimensions(argv[2]);
-        filter_width = d[0];
-        filter_height = d[1];
-        filter_channels = d[2];
-        filter = load_filter(d[0], d[1], d[2]);
-    } else
-        filter = load_filter(argv[2], filter_width, filter_height, filter_channels);
-
-    /*------------------ output dim ------------------*/
-    int stride = 2;
-    int output_width = (input_width - filter_width) / stride + 1;
-    int output_height = (input_height - filter_height) / stride + 1;
-    output.resize(static_cast<size_t>(output_width) * output_height
-                                     * channel_count * filter_channels);
-
     /*------------------ gpu init ------------------*/
     cl::Context context;
     cl::CommandQueue queue;
@@ -129,7 +95,7 @@ time_per_run[i] = std::chrono::duration_cast<std::chrono::microseconds>(run_end 
 
     queue.finish();
 
-    for (int i = 0; i < batch_repeats; ++i) {
+for (int i = 0; i < batch_repeats; ++i) {
 auto write_start = std::chrono::high_resolution_clock::now();
 
         queue.enqueueReadBuffer(d_output_buf[i], CL_FALSE, 0, 
@@ -137,7 +103,7 @@ auto write_start = std::chrono::high_resolution_clock::now();
 
 auto write_end = std::chrono::high_resolution_clock::now();
 time_per_write[i] = std::chrono::duration_cast<std::chrono::microseconds>(write_end - write_start);
-    }
+}
 
     queue.finish();
 
@@ -145,58 +111,28 @@ auto time_overall_end = std::chrono::high_resolution_clock::now();
 auto time_overall = std::chrono::duration_cast<std::chrono::microseconds>(time_overall_end - time_overall_start);
 
     // ------------------ result -------------------------
-    if (strcmp(argv[5], "null") == 0)
-        return;
-    else{
-        // only give the first 3 channels
-        output.resize(static_cast<size_t>(output_width) * output_height * 3);
-        writePngImage(output, output_width, output_height, 3, std::string("data/out/")+argv[5]);
-    }
-
     // Print timing results for python
 std::cout << "Overall_time: " << time_overall.count() << std::endl;
 for (int i = 0; i < batch_repeats; ++i) {
-    std::cout << "Run_time_" << i << ": " << time_per_run[i].count() << std::endl;
-    std::cout << "Read_time_" << i << ": " << time_per_read[i].count() << std::endl;
-    std::cout << "Exec_time_" << i << ": " << time_per_exec[i].count() << std::endl;
-    std::cout << "Write_time_" << i << ": " << time_per_write[i].count() << std::endl;
+std::cout << "Run_time_" << i << ": " << time_per_run[i].count() << std::endl;
+std::cout << "Read_time_" << i << ": " << time_per_read[i].count() << std::endl;
+std::cout << "Exec_time_" << i << ": " << time_per_exec[i].count() << std::endl;
+std::cout << "Write_time_" << i << ": " << time_per_write[i].count() << std::endl;
 }
 
 }
 
 int main(int argc, char* argv[]) {
-    // print working directory
-    char cwd[1024];
-    if (getcwd(cwd, sizeof(cwd)) != NULL) {
-        std::cout << "Current working dir: " << cwd << std::endl;
-    } else {
-        perror("getcwd() error");
-        return 1;
-    }
-    // print executable name
-    char buffer[MAX_PATH];
-    GetModuleFileNameA(NULL, buffer, MAX_PATH);
-    std::string fullPath(buffer);
-
-    try {
-        if (argc == 1) {
-            char** new_argv = new char*[5];
-            new_argv[0] = argv[0];
-            new_argv[1] = (char*)"input_lena.png";
-            new_argv[2] = (char*)"kernel_edge_3c.txt";
-            new_argv[3] = (char*)"true";
-            new_argv[4] = (char*)"2";
-            new_argv[5] = (char*)"output.png";
-            meow(new_argv);
-        } else
-            meow(argv);
-    // ------------------ try catch -------------------------
-    } catch (cl::Error const &e) {
-        std::cerr << "OpenCL Error: " << e.what() << " (" << e.err() << ")" << std::endl;
-        return 1; // Indicate an error
-    } catch (std::exception const &e) {
-        std::cerr << "Standard Exception: " << e.what() << std::endl;
-        return 1;
-    }
-    return 0; // Indicate success
+    char** default_argv = new char*[8];
+    default_argv[0] = argv[0];
+    default_argv[1] = (char*)"input_lena.png"; // input file (w h img_c)
+    default_argv[2] = (char*)
+        "kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt"; // kernel file (fw fh img_c fc)
+        // "kernel_same_1.txt,kernel_same_2.txt,kernel_same_3.txt";
+    default_argv[3] = (char*)"true"; // cpu: threads --- gpu: local mem
+    default_argv[4] = (char*)"2"; // simulated batch size
+    default_argv[5] = (char*)"output_gpu.png"; // output file
+    default_argv[6] = (char*)"2"; // stride
+    default_argv[7] = (char*)"10"; // batch size (w h c batch_size)
+    return replace_argv(argc, argv, default_argv, run);
 }

@@ -1,7 +1,6 @@
 #include <algorithm>
 #include <optional>
-#include "..\conv_2d_sequential\function.cpp"
-#include "..\conv_2d_sequential\utilities.cpp"
+#include "utilities.cpp"
 
 std::vector<float> loadFilterFromFile(const std::string& filename, 
     int& kernel_height, int& kernel_width, int& filter_channel) {
@@ -76,7 +75,7 @@ std::vector<int> parseDimensions(const std::string& str) {
 }
 
 // Function to load input image data from a file
-std::vector<unsigned char> load_input_batch(int& input_width, int& input_height, int& channel_count) {
+std::vector<unsigned char> load_input_img(int& input_width, int& input_height, int& channel_count) {
     std::vector<unsigned char> input_img((size_t)input_width * input_height * channel_count);
     srand(static_cast<unsigned int>(time(nullptr)));
     for(size_t i = 0; i < input_img.size(); ++i)
@@ -84,7 +83,7 @@ std::vector<unsigned char> load_input_batch(int& input_width, int& input_height,
     return input_img;
 }
 
-std::vector<unsigned char> load_input_batch(const std::string& filename, int reps,
+std::vector<unsigned char> load_input_img(const std::string& filename,
         int& input_width, int& input_height, int& channel_count) {
     std::vector<unsigned char> input_img;
     std::vector<float> temp;
@@ -93,7 +92,13 @@ std::vector<unsigned char> load_input_batch(const std::string& filename, int rep
     std::transform(temp.begin(), temp.end(), input_img.begin(), [](float val) { 
         return float_to_uchar_clamped(val);
     });
-    
+
+    return input_img;
+}
+
+std::vector<unsigned char> repeat_to_make_batch(std::vector<unsigned char> input_img,
+        int reps, int& input_width, int& input_height, int& channel_count) {
+
     std::vector<unsigned char> reps_input_img(
         static_cast<size_t>(input_width) * input_height * channel_count * reps);
     for (int i = 0; i < reps; ++i)
@@ -101,30 +106,53 @@ std::vector<unsigned char> load_input_batch(const std::string& filename, int rep
             input_img.begin(), 
             input_img.end(), 
             reps_input_img.begin() + i * input_width * input_height * channel_count);
-
     return reps_input_img;
 }
 
 // Function to load a convolution kernel from a file
-std::vector<float> load_filter(int& input_width, int& input_height, int& filter_channel) {
-    std::vector<float> kernel_data((size_t)input_width * input_height * filter_channel);
+std::vector<float> load_filter(int input_width, int input_height, int channel_count, int filter_channel) {
+    std::vector<float> kernel_data((size_t)input_width * input_height * filter_channel * channel_count);
     srand(static_cast<unsigned int>(time(nullptr)));
     for(size_t i = 0; i < kernel_data.size(); ++i)
         kernel_data[i] = static_cast<unsigned char>(rand() % 256);
     return kernel_data;
 }
 
-std::vector<float> load_filter(const std::string& filename, 
-        int& input_width, int& input_height, int& filter_channel) {
-    std::vector<float> kernel_data = loadFilterFromFile("data/in/"+filename, 
-        input_width, input_height, filter_channel);
+std::vector<float> load_filter(const std::string& filenames, 
+        int& input_width, int& input_height, int& filter_channel, int channel_count) {
+    // Parse comma-separated filenames
+    std::vector<std::string> filenames_array;
+    std::stringstream ss(filenames);
+    std::string filename;
+    while (std::getline(ss, filename, ','))
+        filenames_array.push_back(filename);
+
+    filter_channel = filenames_array.size();
+    
+    std::vector<float> kernel_data;
+    for (int i = 0; i < filter_channel; ++i) {
+        std::string filename = filenames_array[i];
+
+        int temp_channel;
+        std::vector<float> temp = loadFilterFromFile("data/in/kernels/"+filename,
+             input_height, input_width, temp_channel);
+
+        if (temp_channel != channel_count)
+            throw std::runtime_error("Mismatch in channel count for filter " + filename);
+        
+        if (i == 0)
+            kernel_data.resize(temp.size() * filter_channel);
+
+        // Copy the kernel data into the appropriate position in kernel_data
+        std::copy(temp.begin(), temp.end(), kernel_data.begin() + i * temp.size());
+    }
     return kernel_data;
 }
 
 void loadInputs(
     FilePaths& paths, std::vector<unsigned char>& input_img, int& input_width, 
     int& input_height, int& channel_count, std::vector<float>& filter, // Changed to std::vector<float>
-    int& filter_width, int& filter_height,
+    int& filter_width, int& filter_height, int& filter_channels,
     int& stride, int& output_width, int& output_height, std::vector<float>& output // Output is now std::vector<float>
 ) {
     paths = loadPathsFromConfig("data/in/config_conv.txt");
@@ -139,17 +167,10 @@ void loadInputs(
         return float_to_uchar_clamped(val);
     });
 
-    // No conversion needed for filter as it's now float
-    // filter.resize(float_filter.size());
-    // std::transform(float_filter.begin(), float_filter.end(), filter.begin(), [](float val) { 
-    //     return float_to_uchar_clamped(val); // This was for uchar filter
-    // });
-
     stride = 1; 
     output_width = (input_width - filter_width) / stride + 1;
     output_height = (input_height - filter_height) / stride + 1;
-    // Initialize float output vector with 0.0f
-    output.assign(static_cast<size_t>(output_width) * output_height * channel_count, 0.0f); 
+    output.assign(static_cast<size_t>(output_width) * output_height * filter_channels, 0.0f); // (w h fc)
 }
 
 // Helper function for GPU initialization
@@ -240,4 +261,109 @@ void configureLocalMemoryAndWorkers(
     kernel.setArg(13, static_cast<int>(tile_h_host));
     kernel.setArg(14, cl::Local(local_memory_size_bytes));
     kernel.setArg(15, cl::Local(local_filter_memory_size_bytes));
+}
+
+void prep_and_run(char* argv[], 
+    void (*run_f)(char* argv[], std::vector<unsigned char>& input_batch, 
+        int& input_width, int& input_height, int& channel_count,
+        std::vector<float>& filter, int& filter_width, int& filter_height, int& filter_count, 
+        int& stride, std::vector<float>& output, int& output_width, int& output_height)
+    )
+{
+    /*------------------ INPUT ------------------*/
+    std::vector<unsigned char> input_img, input_batch;
+    std::vector<float> filter;
+    int input_width, input_height, channel_count,
+        filter_width, filter_height, filter_count;
+
+    // Load batch
+    int img_c_reps = 1;
+    if (isDimensionString(argv[1])) {
+        std::vector<int> d = parseDimensions(argv[1]);
+        input_width = d[0];
+        input_height = d[1];
+        channel_count = d[2];
+        input_img = load_input_img(d[0], d[1], d[2]);
+    } else
+        input_img = load_input_img(argv[1], input_width, input_height, channel_count); // (width, height, channels, reps)
+
+    img_c_reps = std::stoi(argv[7]);
+    input_batch = repeat_to_make_batch(input_img, img_c_reps, input_width, input_height, channel_count);
+
+    // Load filter
+    if (isDimensionString(argv[2])) {
+        std::vector<int> d = parseDimensions(argv[2]);
+        filter_width = d[0];
+        filter_height = d[1];
+        filter_count = d[2];
+        filter = load_filter(d[0], d[1], channel_count, d[2]);
+    } else
+        filter = load_filter(argv[2], 
+            filter_width, filter_height, filter_count, channel_count); // (fw, fh, img_channels, fc)
+    
+    // asset 
+
+    /*------------------ output dim ------------------*/
+    int stride = std::stoi(argv[6]);
+    int output_width = 1.0f*(input_width - filter_width) / stride + 1;
+    int output_height = 1.0f*(input_height - filter_height) / stride + 1;
+    std::vector<float> output(
+        static_cast<size_t>(output_width) * output_height * filter_count);
+
+    /*------------------ run and out ------------------*/
+    run_f(argv, input_batch, input_width, input_height, channel_count,
+            filter, filter_width, filter_height, filter_count, stride,
+            output, output_width, output_height);
+    
+    // ------------------ result -------------------------
+    if (strcmp(argv[5], "null") == 0)
+        return;
+    else{
+        output.resize(static_cast<size_t>(output_width) * output_height * 3);
+
+        std::transform(output.begin(), output.end(), output.begin(), 
+            [](float val) {return std::abs(val);});
+        float max_val = *std::max_element(output.begin(), output.end());
+        float min_val = *std::min_element(output.begin(), output.end());
+        std::transform(output.begin(), output.end(), output.begin(), 
+            [min_val, max_val](float val) {return (val - min_val) / (max_val - min_val);});
+
+        writePngImage(output, output_width, output_height, 3, std::string("data/out/")+argv[5]);
+    }
+}
+
+int replace_argv(int argc, char* argv[], char* default_argv[],
+    void (*prep_and_run_func)(char* argv[], 
+        std::vector<unsigned char>& input_batch, int& input_width, int& input_height, int& channel_count,
+        std::vector<float>& filter, int& filter_width, int& filter_height, int& filter_channels, int& stride,
+        std::vector<float>& output, int& output_width, int& output_height)
+    )
+{
+    // print working directory
+    char cwd[1024];
+    if (getcwd(cwd, sizeof(cwd)) != NULL) {
+        std::cout << "Current working dir: " << cwd << std::endl;
+    } else {
+        perror("getcwd() error");
+        return 1;
+    }
+    // print executable name
+    char buffer[MAX_PATH];
+    GetModuleFileNameA(NULL, buffer, MAX_PATH);
+    std::string fullPath(buffer);
+
+    try {
+        if (argc == 1) {
+            prep_and_run(default_argv, prep_and_run_func);
+        } else
+            prep_and_run(argv, prep_and_run_func);
+    // ------------------ try catch -------------------------
+    } catch (cl::Error const &e) {
+        std::cerr << "OpenCL Error: " << e.what() << " (" << e.err() << ")" << std::endl;
+        return 1; // Indicate an error
+    } catch (std::exception const &e) {
+        std::cerr << "Standard Exception: " << e.what() << std::endl;
+        return 1;
+    }
+    return 0; // Indicate success
 }

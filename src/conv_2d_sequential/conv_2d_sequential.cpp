@@ -7,40 +7,51 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <ocl_utilities.hpp>
+#include <cmath>
+#include <direct.h>
+#include "../Conv_2d_gpu/conv_2d_gpu.hpp"
 #include "function.cpp"
-#include "utilities.cpp"
 
-int main()
+void run(char* argv[], 
+        std::vector<unsigned char>& input_batch, int& input_width, int& input_height, int& channel_count,
+        std::vector<float>& filter, int& filter_width, int& filter_height, int& filter_channels, int& stride,
+        std::vector<float>& output, int& output_width, int& output_height)
 {
+    /*------------------ run ------------------*/
+    int batch_repeats = std::stoi(argv[4]);
+    int threads = std::stoi(argv[3]);
+    std::cout << "Running " << batch_repeats << " times\n\n";
+    std::cout << "Input size: " << input_width << "x" << input_height << "x" << channel_count << "\n";
+    std::cout << "Using " << (threads == 0 ? "all available hardware" : std::to_string(threads))
+            << " thread" << (threads == 1 ? "" : "s") << "\n\n";
 
-    /*------------------ INPUT ------------------*/
-    // Load paths from config file
-    FilePaths paths = loadPathsFromConfig("data/in/config_conv.txt");
+auto time_overall_start = std::chrono::high_resolution_clock::now();
 
-    int input_width, input_height, channel_count;
-    std::vector<float> input_img = readPngImage(paths.inputImagePath, input_width, input_height, channel_count);
+    for (int i = 0; i < batch_repeats; ++i)
+        conv2d_cpu_threaded(input_batch, input_width, input_height, channel_count,
+                filter, filter_width, filter_height, filter_channels,
+                output, threads, stride, output_width, output_height);
 
-    // Filter
-    int filter_width, filter_height;
-    std::vector<float> filter = loadConvKernelFromFile(paths.kernelFilePath, filter_height, filter_width);
+auto time_overall_end = std::chrono::high_resolution_clock::now();
+auto time_overall = std::chrono::duration_cast<std::chrono::microseconds>(time_overall_end - time_overall_start);
 
-    int stride = 1; // Stride for convolution
-    const int output_width = (input_width - filter_width) / stride + 1;
-    const int output_height = (input_height - filter_height) / stride + 1;
-    std::vector<float> output(static_cast<size_t>(output_width) * output_height * channel_count); 
+    /*------------------ timming results ------------------*/
+std::cout << "Overall_time: " << time_overall.count() << std::endl;
+}
 
-    // ------------------ choose thread count ------------------
-    int threads = 0; // Changed from 12 to 0 to use hardware_concurrency()
-    std::cout << "Using " << (threads == 0 ? "all available hardware" : std::to_string(threads)) << " thread"
-              << (threads == 1 ? "" : "s") << "\n\n";
-              
-    // ------------------ run CPU convolution ------------------
-    std::cout << "\nbeginning conv2d_cpu_threaded\n";
-    conv2d_cpu_threaded(input_img.data(), input_width, input_height, channel_count,
-               filter.data(), filter_width, filter_height,
-               output.data(), threads, stride);
-    std::cout << "finished conv2d_cpu_threaded\n";
 
-    // ------------------ result -------------------------
-    writePngImage(output, output_width, output_height, channel_count, paths.outputImagePath); 
+int main(int argc, char* argv[]) {
+    char** default_argv = new char*[8];
+    default_argv[0] = argv[0];
+    default_argv[1] = (char*)"input_lena.png"; // input file (w h img_c)
+    default_argv[2] = (char*)
+        "kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt"; // kernel file (fw fh img_c fc)
+        // "kernel_same_1.txt,kernel_same_2.txt,kernel_same_3.txt";
+    default_argv[3] = (char*)"1"; // cpu: threads --- gpu: local mem
+    default_argv[4] = (char*)"2"; // simulated batch size
+    default_argv[5] = (char*)"output_seq.png"; // output file
+    default_argv[6] = (char*)"2"; // stride
+    default_argv[7] = (char*)"10"; // batch size (w h c batch_size)
+    return replace_argv(argc, argv, default_argv, run);
 }

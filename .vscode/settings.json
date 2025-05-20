@@ -50,6 +50,11 @@
         "forward_list": "cpp",
         "queue": "cpp",
         "chrono": "cpp",
-        "__string": "cpp"
+        "__string": "cpp",
+        "__hash_table": "cpp",
+        "unordered_map": "cpp",
+        "filesystem": "cpp",
+        "iterator": "cpp",
+        "stack": "cpp"
     }
 }

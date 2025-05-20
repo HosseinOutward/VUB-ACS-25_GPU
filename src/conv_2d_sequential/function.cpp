@@ -4,71 +4,62 @@
 #include <stdexcept>
 #include <iostream>
 
-void conv2d_cpu_threaded(const float* in, int in_w, int in_h, int channel_count,
-                         const float* filt, int filt_w, int filt_h,
-                         float* out, int threads, int stride)
+inline int index3d(int z, int y, int x, int height, int width) {
+    return z * (height) * (width) + y * (width) + x;
+}
+inline int index4d(int k, int z, int y, int x, int depth, int height, int width) {
+    return k * (depth) * (height) * (width) + index3d(z, y, x, height, width);
+}
+
+void conv2d_cpu_threaded(
+    std::vector<unsigned char>& in, // (w h img_c)
+    int in_w, int in_h, int channel_count,
+    std::vector<float>& filt, // (fw fh img_c fc)
+    int filt_w, int filt_h, int filt_c,
+    std::vector<float>& out, // (ow oh fc)
+    int threads, int stride, int out_w, int out_h)
 {
-    if (stride <= 0) {
-        throw std::invalid_argument("Stride must be positive.");
-    }
-    const int out_w = (in_w - filt_w) / stride + 1;
-    const int out_h = (in_h - filt_h) / stride + 1;
-    const int in_channel_size = in_w * in_h;
-    const int out_channel_size = out_w * out_h;
-
-    if (out_w <= 0 || out_h <= 0) {
-        std::cerr << "Warning: Output dimensions are non-positive (out_w: " << out_w << ", out_h: " << out_h 
-                  << "). No output will be generated." << std::endl;
-        return; 
-    }
-
     // ----------- decide thread count ----------------------------------------
     if (threads <= 0)
         threads = static_cast<int>(std::thread::hardware_concurrency());
-    if (threads < 1)   // safeguard for very odd systems
+    if (threads < 1)
         threads = 1;
 
     // ----------- worker that owns a contiguous row-block --------------------
-    auto worker = [&](int y_begin, int y_end, int channel) {
-        const float* current_in_channel = in + channel * in_channel_size;
-        float* current_out_channel = out + channel * out_channel_size;
+    auto worker = [&](int out_y_begin, int out_y_end) {
+        for (int out_y = out_y_begin; out_y < out_y_end; ++out_y)
+            for (int out_x = 0; out_x < out_w; ++out_x)
 
-        for (int y = y_begin; y < y_end; ++y)
-            for (int x = 0; x < out_w; ++x) {
-                float sum = 0.f;
-                for (int fy = 0; fy < filt_h; ++fy) {
-                    const int iy = y * stride + fy; 
-                    for (int fx = 0; fx < filt_w; ++fx) {
-                        const int ix = x * stride + fx;
-                        if (!(iy < in_h && ix < in_w))
-                            throw std::out_of_range("Input coordinates out of bounds: (" + std::to_string(iy) + ", " + std::to_string(ix) + ")");
+                for (int fc = 0; fc < filt_c; ++fc) {
+                    float sum = 0.0f;
 
-                        sum += current_in_channel[iy * in_w + ix] * filt[fy * filt_w + fx];
-                    }
+                    for (int in_c = 0; in_c < channel_count; ++in_c)
+                        for (int filt_y = 0; filt_y < filt_h; ++filt_y)
+                            for (int filt_x = 0; filt_x < filt_w; ++filt_x) {
+                                int in_x = out_x * stride + filt_x;
+                                int in_y = out_y * stride + filt_y;
+                                sum += (float)in[index3d(in_c, in_y, in_x, in_h, in_w)] / 255.f *
+                                       filt[index4d(fc, in_c, filt_y, filt_x, channel_count, filt_h, filt_w)];
+                            }
+
+                    out[index3d(fc, out_y, out_x, out_h, out_w)] = sum;
                 }
-                current_out_channel[y * out_w + x] = sum;
-            }
     };
 
     // ----------- launch threads (or run inline) -----------------------------
     // Process each channel seperately but rows in parallel
-    for (int c = 0; c < channel_count; ++c) {
-        if (threads == 1) {
-            worker(0, out_h, c);
-        } else {
-            std::vector<std::thread> pool;
-            pool.reserve(threads);
+    if (threads == 1)
+        worker(0, out_h);
 
-            const int rows_per_thread = (out_h + threads - 1) / threads;
-            int y0 = 0;
-            for (int t = 0; t < threads && y0 < out_h; ++t) {
-                int y1 = std::min(out_h, y0 + rows_per_thread);
-                pool.emplace_back(worker, y0, y1, c);
-                y0 = y1;
-            }
+    else {
+        std::vector<std::thread> pool;
+        pool.reserve(threads);
 
-            for (auto& th : pool)
-                th.join();
-        }
+        const int rows_per_thread = (out_h + threads-1) / threads;
+        for (int y0 = 0; y0 < out_h; y0+=rows_per_thread)
+            pool.emplace_back(worker, y0, std::min(out_h, y0+rows_per_thread));
+
+        for (auto& th : pool)
+            th.join();
     }
 }
