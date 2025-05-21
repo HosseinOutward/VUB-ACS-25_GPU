@@ -40,7 +40,15 @@ def clean_parsed(output_lines):
         f"Expected {len(output_lines)} key-value pairs, but got {len(parsed_data)}."
 
     cleaned_data = {'overall_time': parsed_data.pop('Overall_time')}
-    all_batch_counts = int(len(parsed_data) / 4)
+
+    if len(parsed_data) == 0:
+        return cleaned_data
+
+    log_numbers = 0
+    pd_keys = list(parsed_data.keys())
+    while pd_keys[log_numbers].find('_0') != -1:
+        log_numbers += 1
+    all_batch_counts = int(len(parsed_data) / log_numbers)
 
     for key, value in parsed_data.items():
         batch_no = int(key.split('_')[-1])
@@ -52,9 +60,8 @@ def clean_parsed(output_lines):
 
     return cleaned_data
 
-def generate_data(samples,
-        single_batch_size = 3, batch_counts = 2,
-        gpu_local_mem = 'false', cpu_threads = '0'):
+def generate_data(samples, single_batch_size,
+            batch_counts, gpu_local_mem, cpu_threads):
     args = [
         "input_lena.png",  # input image
         "kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt",  # kernel files
@@ -89,4 +96,6 @@ def generate_data(samples,
         f.write("}\n")
 
 if __name__ == "__main__":
-    generate_data(samples=100,)
+    generate_data(samples=20,
+                  single_batch_size = 10, batch_counts = 20,
+                  gpu_local_mem = 'false', cpu_threads = '0')

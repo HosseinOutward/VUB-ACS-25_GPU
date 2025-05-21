@@ -99,11 +99,13 @@ time_start_exec[i] = std::chrono::duration_cast<std::chrono::microseconds>(exec_
 
         queue.enqueueNDRangeKernel(kernel, cl::NullRange, global_dims, local_dims);
 
-auto exec_end = std::chrono::high_resolution_clock::now();
-time_per_exec[i] = std::chrono::duration_cast<std::chrono::microseconds>(exec_end - exec_start);
+// periodically check if the kernel is finished but don't wait for it. do this before and after reading the output and before writing the output. 
+// this means replacing the queue finish with the checking of the kernel status. turn the kernel staus check into a function to make it clean.
+// auto exec_end = std::chrono::high_resolution_clock::now();
+// time_per_exec[i] = std::chrono::duration_cast<std::chrono::microseconds>(exec_end - exec_start);
 
-auto run_end = std::chrono::high_resolution_clock::now();
-time_per_batch[i] = std::chrono::duration_cast<std::chrono::microseconds>(run_end - run_start);
+// auto run_end = std::chrono::high_resolution_clock::now();
+// time_per_batch[i] = std::chrono::duration_cast<std::chrono::microseconds>(run_end - run_start);
     }
 
     queue.finish();
@@ -135,7 +137,7 @@ std::cout << "Write_time_" << i << ": " << time_per_write[i].count() << std::end
 
 std::cout << "Start_read_" << i << ": " << time_start_read[i].count() << std::endl;
 std::cout << "Start_exec_" << i << ": " << time_start_exec[i].count() << std::endl;
-std::cout << "Start_write_" << i << ": " << time_start_exec[i].count() << std::endl;
+std::cout << "Start_write_" << i << ": " << time_start_write[i].count() << std::endl;
 }
 
 }
