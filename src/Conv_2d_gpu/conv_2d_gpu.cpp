@@ -1,5 +1,6 @@
 #define CL_HPP_ENABLE_EXCEPTIONS
 #define CL_HPP_TARGET_OPENCL_VERSION 300
+
 #include <cl2.hpp>
 
 #include <vector>
@@ -57,89 +58,97 @@ void run(char* argv[],
     /*------------------ set input/output vector ------------------*/
     int batch_repeats = std::stoi(argv[4]);
     std::vector<cl::Buffer> d_input(batch_repeats), d_output_buf(batch_repeats);
+    std::vector<cl::Event> exec_events(batch_repeats), write_events(batch_repeats);
 
-std::vector<std::chrono::microseconds> time_per_batch(batch_repeats);
-std::vector<std::chrono::microseconds> time_per_read(batch_repeats);
-std::vector<std::chrono::microseconds> time_per_exec(batch_repeats);
-std::vector<std::chrono::microseconds> time_per_write(batch_repeats);
+    #define DETAILED_TIMINGS
+    #ifdef DETAILED_TIMINGS
+        std::vector<std::chrono::high_resolution_clock::time_point> time_start_read(batch_repeats); // also batch start
+        std::vector<std::chrono::high_resolution_clock::time_point> time_start_exec(batch_repeats);
+        std::vector<std::chrono::high_resolution_clock::time_point> time_start_write(batch_repeats);
 
-std::vector<std::chrono::microseconds> time_start_read(batch_repeats);
-std::vector<std::chrono::microseconds> time_start_exec(batch_repeats);
-std::vector<std::chrono::microseconds> time_start_write(batch_repeats);
+        std::vector<std::chrono::high_resolution_clock::time_point> time_end_read(batch_repeats);
+        std::vector<std::chrono::high_resolution_clock::time_point> time_end_exec(batch_repeats);
+        std::vector<std::chrono::high_resolution_clock::time_point> time_end_write(batch_repeats);
+    #endif
 
-auto time_overall_start = std::chrono::high_resolution_clock::now();
+    std::chrono::high_resolution_clock::time_point time_overall_start_base = 
+        std::chrono::high_resolution_clock::now();
 
+    // ------------------ load filter -------------------------
     cl::Buffer d_filter = cl::Buffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
                         sizeof(float) * filter.size(), const_cast<float*>(filter.data()));
     kernel.setArg(2, d_filter);
 
-    // time for each each run
-
+    // ------------------ load and process batches -------------------------
     for (int i = 0; i < batch_repeats; ++i) {
-auto run_start = std::chrono::high_resolution_clock::now();
-auto read_start = std::chrono::high_resolution_clock::now();
-time_start_read[i] = std::chrono::duration_cast<std::chrono::microseconds>(read_start-time_overall_start);
-
+        #ifdef DETAILED_TIMINGS
+            time_start_read[i] = std::chrono::high_resolution_clock::now();
+        #endif
         d_input[i] = cl::Buffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
                         sizeof(unsigned char) * input_batch.size(), 
                         const_cast<unsigned char*>(input_batch.data()));
 
-auto read_end = std::chrono::high_resolution_clock::now();
-time_per_read[i] = std::chrono::duration_cast<std::chrono::microseconds>(read_end - read_start);
-
+        #ifdef DETAILED_TIMINGS
+            time_end_read[i] = std::chrono::high_resolution_clock::now();
+        #endif
         d_output_buf[i] = cl::Buffer(context, CL_MEM_READ_WRITE,
                             sizeof(float) * output.size(), nullptr);
 
         kernel.setArg(0, d_input[i]);
         kernel.setArg(1, d_output_buf[i]);
 
-        // enqueue the kernel
-auto exec_start = std::chrono::high_resolution_clock::now();
-time_start_exec[i] = std::chrono::duration_cast<std::chrono::microseconds>(exec_start - time_overall_start);
-
-        queue.enqueueNDRangeKernel(kernel, cl::NullRange, global_dims, local_dims);
-
-// periodically check if the kernel is finished but don't wait for it. do this before and after reading the output and before writing the output. 
-// this means replacing the queue finish with the checking of the kernel status. turn the kernel staus check into a function to make it clean.
-// auto exec_end = std::chrono::high_resolution_clock::now();
-// time_per_exec[i] = std::chrono::duration_cast<std::chrono::microseconds>(exec_end - exec_start);
-
-// auto run_end = std::chrono::high_resolution_clock::now();
-// time_per_batch[i] = std::chrono::duration_cast<std::chrono::microseconds>(run_end - run_start);
+        #ifdef DETAILED_TIMINGS
+            time_start_exec[i] = std::chrono::high_resolution_clock::now();
+        #endif
+        queue.enqueueNDRangeKernel(kernel, cl::NullRange, 
+            global_dims, local_dims, nullptr, &exec_events[i]);
     }
-
-    queue.finish();
 
     for (int i = 0; i < batch_repeats; ++i) {
-auto write_start = std::chrono::high_resolution_clock::now();
-time_start_write[i] = std::chrono::duration_cast<std::chrono::microseconds>(write_start-time_overall_start);
+        exec_events[i].wait();
+        
+        #ifdef DETAILED_TIMINGS
+            time_start_write[i] = std::chrono::high_resolution_clock::now();
+            time_end_exec[i] = time_start_write[i];
+        #endif
 
         queue.enqueueReadBuffer(d_output_buf[i], CL_FALSE, 0, 
-            sizeof(float) * output.size(), output.data());
+            sizeof(float) * output.size(), output.data(), nullptr, &write_events[i]);
+    }
 
-auto write_end = std::chrono::high_resolution_clock::now();
-time_per_write[i] = std::chrono::duration_cast<std::chrono::microseconds>(write_end - write_start);
+    for (int i = 0; i < batch_repeats; ++i) {
+        write_events[i].wait();
+        #ifdef DETAILED_TIMINGS
+            time_end_write[i] = std::chrono::high_resolution_clock::now();
+        #endif
     }
 
     queue.finish();
-
-auto time_overall_end = std::chrono::high_resolution_clock::now();
-auto time_overall = std::chrono::duration_cast<std::chrono::microseconds>(time_overall_end - time_overall_start);
 
     // ------------------ result -------------------------
     // Print timing results for python
-std::cout << "Overall_time: " << time_overall.count() << std::endl;
-for (int i = 0; i < batch_repeats; ++i) {
-std::cout << "Batch_time_" << i << ": " << time_per_batch[i].count() << std::endl;
-std::cout << "Read_time_" << i << ": " << time_per_read[i].count() << std::endl;
-std::cout << "Exec_time_" << i << ": " << time_per_exec[i].count() << std::endl;
-std::cout << "Write_time_" << i << ": " << time_per_write[i].count() << std::endl;
+    auto ms_cast = [](auto duration) { 
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count()/1'000'000.0; };
+    auto time_diff = ms_cast(std::chrono::high_resolution_clock::now() - time_overall_start_base);
+    std::cout << "Overall_time: " << time_diff << std::endl;
 
-std::cout << "Start_read_" << i << ": " << time_start_read[i].count() << std::endl;
-std::cout << "Start_exec_" << i << ": " << time_start_exec[i].count() << std::endl;
-std::cout << "Start_write_" << i << ": " << time_start_write[i].count() << std::endl;
-}
+    #ifdef DETAILED_TIMINGS
+        for (int i = 0; i < batch_repeats; ++i) {
+            time_diff = ms_cast(time_start_read[i] - time_overall_start_base);
+            std::cout << "Start_read_" << i << ": " << time_diff << std::endl;
+            time_diff = ms_cast(time_start_exec[i] - time_overall_start_base);
+            std::cout << "Start_exec_" << i << ": " << time_diff << std::endl;
+            time_diff = ms_cast(time_start_write[i] - time_overall_start_base);
+            std::cout << "Start_write_" << i << ": " << time_diff << std::endl;
 
+            time_diff = ms_cast(time_end_read[i] - time_start_read[i]);
+            std::cout << "Read_time_" << i << ": " << time_diff << std::endl;
+            time_diff = ms_cast(time_end_exec[i] - time_start_exec[i]);
+            std::cout << "Exec_time_" << i << ": " << time_diff << std::endl;
+            time_diff = ms_cast(time_end_write[i] - time_start_write[i]);
+            std::cout << "Write_time_" << i << ": " << time_diff << std::endl;
+        }
+    #endif
 }
 
 int main(int argc, char* argv[]) {
