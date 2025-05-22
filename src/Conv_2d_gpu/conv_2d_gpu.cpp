@@ -1,6 +1,8 @@
 #define CL_HPP_ENABLE_EXCEPTIONS
 #define CL_HPP_TARGET_OPENCL_VERSION 300
 
+#define DETAILED_TIMINGS
+
 #include <cl2.hpp>
 
 #include <vector>
@@ -8,69 +10,20 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
-#include <ocl_utilities.hpp>
 #include <cmath>
+#include <chrono>
+
+/* ---- project headers (unchanged) ---- */
+#include <ocl_utilities.hpp>
 #include "conv_2d_gpu.hpp"
 #include <direct.h>
 
+/* --------------------------------------------------------------------- */
+static inline double ns_to_ms(long long ns)        { return ns / 1'000'000.0; }
+static inline double ns_to_ms(cl_ulong  ns)        { return ns / 1'000'000.0; }
 
-
-void check_exec_and_queue_write(
-    cl::CommandQueue& queue, cl::Kernel& kernel, cl::Buffer& d_output_buf,
-    int& batch_repeats, std::vector<cl::Event>& exec_events,
-    std::vector<cl::Event>& write_events, std::vector<float>& output,
-    std::vector<std::chrono::high_resolution_clock::time_point> time_start_write,
-    std::vector<std::chrono::high_resolution_clock::time_point> time_end_exec,
-    int& last_i_exec, int& last_i_write
-) {
-    std::chrono::high_resolution_clock::time_point temp_time = 
-        std::chrono::high_resolution_clock::now();
-
-    cl_int execution_status;
-
-    for (int j = last_i_exec; j < batch_repeats; ++j) {
-        if (!exec_events[j]())
-            break;
-
-        exec_events[j].getInfo(CL_EVENT_COMMAND_EXECUTION_STATUS, &execution_status);
-        if (execution_status == CL_COMPLETE) {
-            #ifdef DETAILED_TIMINGS
-                time_start_write[j] = std::chrono::high_resolution_clock::now();
-                time_end_exec[j] = time_start_write[j];
-            #endif
-
-            queue.enqueueReadBuffer(d_output_buf[j], CL_FALSE, 0, 
-                sizeof(float) * output.size(), output.data(), nullptr, &write_events[j]);
-        
-            last_i_exec = j + 1;
-        }
-    }
-    
-    // Check for write events
-    for (int j = last_i_write; j < batch_repeats; ++j) {
-        if (!write_events[j]())
-            break;
-
-        write_events[j].getInfo(CL_EVENT_COMMAND_EXECUTION_STATUS, &execution_status);
-        if (execution_status == CL_COMPLETE) {
-            #ifdef DETAILED_TIMINGS
-                time_end_write[j] = std::chrono::high_resolution_clock::now();
-            #endif
-
-            queue.enqueueReadBuffer(d_output_buf[j], CL_FALSE, 0, 
-                sizeof(float) * output.size(), output.data(), nullptr, &write_events[j]);
-        
-            last_i_write = j + 1;
-        }
-    }
-
-    printf("time_start_write: %f\n", 
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::high_resolution_clock::now() - temp_time).count()/1'000'000.0);
-}
-
-
-void run(char* argv[], 
+/* --------------------------------------------------------------------- */
+void run(char* argv[],
         std::vector<unsigned char>& input_batch, int& input_width, int& input_height, int& channel_count,
         std::vector<float>& filter, int& filter_width, int& filter_height, int& filter_channels, int& stride,
         std::vector<float>& output, int& output_width, int& output_height)
@@ -86,30 +39,30 @@ void run(char* argv[],
         stride, input_width, input_height, channel_count, filter_width, filter_height, 
         filter_channels, output_width, output_height);
 
-    /*------------------ local memory info ------------------*/
-    size_t global_work_size_x, global_work_size_y, global_work_size_z;
-    global_work_size_x = output_width;
-    global_work_size_y = output_height;
-    global_work_size_z = filter_channels;
+    /* Replace the queue with an **out-of-order, profiling** queue */
+    cl_command_queue_properties qprops =
+        CL_QUEUE_PROFILING_ENABLE | CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE;
+    queue = cl::CommandQueue(context, device, qprops);
+
+    /* -------------------- work-group sizes ---------------------- */
+    std::size_t gws_x = output_width,
+                gws_y = output_height,
+                gws_z = filter_channels;
 
     cl::NDRange local_dims = cl::NullRange;
-    
-    if (strcmp(argv[3], "true") == 0) {
-        std::cout << "Using local memory" << std::endl;
-        size_t local_wg_dim_x, local_wg_dim_y;
-        configureLocalMemoryAndWorkers(
-            device, kernel, stride, 
-            filter_width, filter_height, filter_channels,
-            output_width, output_height, channel_count,
-            local_wg_dim_x, local_wg_dim_y, 
-            global_work_size_x, global_work_size_y, global_work_size_z
-        );
-        
-        local_dims = cl::NDRange(local_wg_dim_x, local_wg_dim_y);
+
+    if (std::strcmp(argv[3], "true") == 0) {
+        std::cout << "Using local memory\n";
+        std::size_t ldx, ldy;
+        configureLocalMemoryAndWorkers(device, kernel, stride,
+            filter_width,  filter_height,  filter_channels, 
+            output_width,  output_height,  channel_count,
+            ldx, ldy, gws_x, gws_y, gws_z);
+        local_dims = cl::NDRange(ldx, ldy);
     } else
         std::cout << "no local memory" << std::endl;
 
-    cl::NDRange global_dims(global_work_size_x, global_work_size_y, global_work_size_z);
+    cl::NDRange global_dims(gws_x, gws_y, gws_z);
 
     /*------------------ set input/output vector ------------------*/
     int batch_repeats = std::stoi(argv[4]);
@@ -190,23 +143,23 @@ void run(char* argv[],
     auto time_diff = ms_cast(std::chrono::high_resolution_clock::now() - time_overall_start_base);
     std::cout << "Overall_time: " << time_diff << std::endl;
 
-    #ifdef DETAILED_TIMINGS
-        for (int i = 0; i < batch_repeats; ++i) {
-            time_diff = ms_cast(time_start_read[i] - time_overall_start_base);
-            std::cout << "Start_read_" << i << ": " << time_diff << std::endl;
-            time_diff = ms_cast(time_start_exec[i] - time_overall_start_base);
-            std::cout << "Start_exec_" << i << ": " << time_diff << std::endl;
-            time_diff = ms_cast(time_start_write[i] - time_overall_start_base);
-            std::cout << "Start_write_" << i << ": " << time_diff << std::endl;
+    /* ------------------ human-readable output ------------------- */
+    for (int i = 0; i < batch_repeats; ++i)
+    {
+        // Convert hardware start times to relative times from hardware reference
+        auto hw_rel = [&](double hw_start_ms){
+            return hw_start_ms - ns_to_ms(hw_ref_ns);
+        };
 
-            time_diff = ms_cast(time_end_read[i] - time_start_read[i]);
-            std::cout << "Read_time_" << i << ": " << time_diff << std::endl;
-            time_diff = ms_cast(time_end_exec[i] - time_start_exec[i]);
-            std::cout << "Exec_time_" << i << ": " << time_diff << std::endl;
-            time_diff = ms_cast(time_end_write[i] - time_start_write[i]);
-            std::cout << "Write_time_" << i << ": " << time_diff << std::endl;
-        }
-    #endif
+        std::cout << "Start_upload_" << i << ": " << hw_rel(hw_start_upload_ms[i]) << std::endl;
+        std::cout << "Start_kernel_" << i << ": " << hw_rel(hw_start_kernel_ms[i]) << std::endl;
+        std::cout << "Start_download_" << i << ": " << hw_rel(hw_start_download_ms[i]) << std::endl;
+
+        std::cout << "Upload_time_" << i << ": " << upload_ms[i] << std::endl;
+        std::cout << "Kernel_time_" << i << ": " << kernel_ms[i] << std::endl;
+        std::cout << "Download_time_" << i << ": " << download_ms[i] << std::endl;
+    }
+#endif
 }
 
 int main(int argc, char* argv[]) {
