@@ -31,7 +31,7 @@ def run_and_parse_conv(args_list, exe_filename="conv_2d_gpu.exe"):
 
 def clean_parsed(output_lines):
     parsed_data = {
-        parts[0].strip(): int(parts[1].strip())
+        parts[0].strip(): float(parts[1].strip())
         for line in output_lines
         if line.strip() and (parts := line.split(':', 1))
     }
@@ -73,7 +73,8 @@ def generate_data(samples, single_batch_size,
     ]
 
     parsed_data = {'cpu_overall_time':[]}
-    for _ in range(samples):
+    for i in range(samples):
+        print(f"Sample {i + 1} of {samples}")
         args[2] = gpu_local_mem
         output_lines_gpu = run_and_parse_conv(args, exe_filename="conv_2d_gpu.exe")
         temp = clean_parsed(output_lines_gpu)
@@ -96,6 +97,6 @@ def generate_data(samples, single_batch_size,
         f.write("}\n")
 
 if __name__ == "__main__":
-    generate_data(samples=20,
-                  single_batch_size = 10, batch_counts = 20,
+    generate_data(samples=5,
+                  single_batch_size = 100, batch_counts = 5,
                   gpu_local_mem = 'false', cpu_threads = '0')

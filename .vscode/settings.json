@@ -55,6 +55,7 @@
         "unordered_map": "cpp",
         "filesystem": "cpp",
         "iterator": "cpp",
-        "stack": "cpp"
+        "stack": "cpp",
+        "utility": "cpp"
     }
 }

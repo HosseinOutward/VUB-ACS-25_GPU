@@ -14,6 +14,62 @@
 #include <direct.h>
 
 
+
+void check_exec_and_queue_write(
+    cl::CommandQueue& queue, cl::Kernel& kernel, cl::Buffer& d_output_buf,
+    int& batch_repeats, std::vector<cl::Event>& exec_events,
+    std::vector<cl::Event>& write_events, std::vector<float>& output,
+    std::vector<std::chrono::high_resolution_clock::time_point> time_start_write,
+    std::vector<std::chrono::high_resolution_clock::time_point> time_end_exec,
+    int& last_i_exec, int& last_i_write
+) {
+    std::chrono::high_resolution_clock::time_point temp_time = 
+        std::chrono::high_resolution_clock::now();
+
+    cl_int execution_status;
+
+    for (int j = last_i_exec; j < batch_repeats; ++j) {
+        if (!exec_events[j]())
+            break;
+
+        exec_events[j].getInfo(CL_EVENT_COMMAND_EXECUTION_STATUS, &execution_status);
+        if (execution_status == CL_COMPLETE) {
+            #ifdef DETAILED_TIMINGS
+                time_start_write[j] = std::chrono::high_resolution_clock::now();
+                time_end_exec[j] = time_start_write[j];
+            #endif
+
+            queue.enqueueReadBuffer(d_output_buf[j], CL_FALSE, 0, 
+                sizeof(float) * output.size(), output.data(), nullptr, &write_events[j]);
+        
+            last_i_exec = j + 1;
+        }
+    }
+    
+    // Check for write events
+    for (int j = last_i_write; j < batch_repeats; ++j) {
+        if (!write_events[j]())
+            break;
+
+        write_events[j].getInfo(CL_EVENT_COMMAND_EXECUTION_STATUS, &execution_status);
+        if (execution_status == CL_COMPLETE) {
+            #ifdef DETAILED_TIMINGS
+                time_end_write[j] = std::chrono::high_resolution_clock::now();
+            #endif
+
+            queue.enqueueReadBuffer(d_output_buf[j], CL_FALSE, 0, 
+                sizeof(float) * output.size(), output.data(), nullptr, &write_events[j]);
+        
+            last_i_write = j + 1;
+        }
+    }
+
+    printf("time_start_write: %f\n", 
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::high_resolution_clock::now() - temp_time).count()/1'000'000.0);
+}
+
+
 void run(char* argv[], 
         std::vector<unsigned char>& input_batch, int& input_width, int& input_height, int& channel_count,
         std::vector<float>& filter, int& filter_width, int& filter_height, int& filter_channels, int& stride,
@@ -102,18 +158,20 @@ void run(char* argv[],
         #endif
         queue.enqueueNDRangeKernel(kernel, cl::NullRange, 
             global_dims, local_dims, nullptr, &exec_events[i]);
+
+        check_exec_and_queue_write(queue, kernel, d_output_buf[i], batch_repeats, 
+            exec_events, write_events, output, time_start_write, time_end_exec, i, i);
     }
 
     for (int i = 0; i < batch_repeats; ++i) {
-        exec_events[i].wait();
-        
-        #ifdef DETAILED_TIMINGS
-            time_start_write[i] = std::chrono::high_resolution_clock::now();
-            time_end_exec[i] = time_start_write[i];
-        #endif
+        if (!write_events[i]()) {
+            #ifdef DETAILED_TIMINGS
+                time_start_write[i] = std::chrono::high_resolution_clock::now();
+            #endif
 
-        queue.enqueueReadBuffer(d_output_buf[i], CL_FALSE, 0, 
-            sizeof(float) * output.size(), output.data(), nullptr, &write_events[i]);
+            queue.enqueueReadBuffer(d_output_buf[i], CL_FALSE, 0, 
+                sizeof(float) * output.size(), output.data(), nullptr, &write_events[j]);
+            }
     }
 
     for (int i = 0; i < batch_repeats; ++i) {

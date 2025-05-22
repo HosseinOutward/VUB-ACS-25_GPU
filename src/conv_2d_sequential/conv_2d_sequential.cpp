@@ -34,10 +34,10 @@ auto time_overall_start = std::chrono::high_resolution_clock::now();
                 output, threads, stride, output_width, output_height);
 
 auto time_overall_end = std::chrono::high_resolution_clock::now();
-auto time_overall = std::chrono::duration_cast<std::chrono::microseconds>(time_overall_end - time_overall_start);
+auto time_overall = std::chrono::duration_cast<std::chrono::nanoseconds>(time_overall_end - time_overall_start);
 
     /*------------------ timming results ------------------*/
-std::cout << "Overall_time: " << time_overall.count() << std::endl;
+std::cout << "Overall_time: " << time_overall.count()/1000000.0 << std::endl;
 }
 
 
