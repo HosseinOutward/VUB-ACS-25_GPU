@@ -306,7 +306,6 @@ void initializeGPU(
     kernel.setArg(11, output_height);
 }
 
-
 // Helper function for local memory and worker configuration
 void configureLocalMemoryAndWorkers(
     const cl::Device& device, cl::Kernel& kernel, int stride, 

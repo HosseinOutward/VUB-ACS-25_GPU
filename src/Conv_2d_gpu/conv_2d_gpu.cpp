@@ -33,18 +33,20 @@ void run(char* argv[],
     cl::Device device;
     cl::Program program;
     cl::Kernel kernel;
-
+    
+    /* IMPORTANT PART - Create separate queues for maximum parallelism */
     initializeGPU(context, queue, device, program, kernel, (strcmp(argv[3], "true") == 0),
         stride, input_width, input_height, channel_count, 
         filter_width, filter_height, filter_channels, output_width, output_height);
-
-    /* IMPORTANT PART - Create separate queues for maximum parallelism */
-    cl_command_queue_properties qprops =
-        CL_QUEUE_PROFILING_ENABLE | CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE;
     
-    // Separate queues for different operations to enable true parallelism
-    cl::CommandQueue compute_queue(context, device, qprops);  // For kernel execution
-    cl::CommandQueue transfer_queue(context, device, qprops); // For data transfers (DMA)
+    // Check if device supports out-of-order execution for full-duplex
+    cl_command_queue_properties qprops = CL_QUEUE_PROFILING_ENABLE;
+    qprops |= CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE;
+    
+    // Three separate queues for true full duplex operation
+    cl::CommandQueue compute_queue(context, device, qprops);   // For kernel execution
+    cl::CommandQueue upload_queue(context, device, qprops);    // For data uploads (DMA in)
+    cl::CommandQueue download_queue(context, device, qprops);  // For data downloads (DMA out)
 
     /* -------------------- work-group sizes ---------------------- */
     std::size_t gws_x = output_width,
@@ -72,12 +74,18 @@ void run(char* argv[],
                         sizeof(float) * filter.size(),
                         const_cast<float*>(filter.data()));
     kernel.setArg(2, d_filter);
-
+    
     /* ------------------ batch buffers & events ------------------ */
     const int batch_repeats = std::stoi(argv[4]);
 
     std::vector<cl::Buffer> d_input(batch_repeats);
     std::vector<cl::Buffer> d_output(batch_repeats);
+    
+    // Create separate host buffers for each batch to avoid serialization
+    std::vector<std::vector<float>> host_outputs(batch_repeats);
+    for (int i = 0; i < batch_repeats; ++i) {
+        host_outputs[i].resize(output.size());
+    }
 
     std::vector<cl::Event> ev_upload(batch_repeats);
     std::vector<cl::Event> ev_kernel(batch_repeats);
@@ -94,52 +102,68 @@ void run(char* argv[],
 #endif
 
     /* ------------------ main loop: enqueue ---------------------- */
+    const auto overall_start = std::chrono::high_resolution_clock::now();
+
     const std::size_t in_bytes = sizeof(unsigned char) * input_batch.size();
     const std::size_t out_bytes = sizeof(float) * output.size();
 
-    const auto overall_start = std::chrono::high_resolution_clock::now();
+    // warmup
+    d_input[0] = cl::Buffer(context, CL_MEM_READ_ONLY,  in_bytes);
+    d_output[0]= cl::Buffer(context, CL_MEM_READ_WRITE, out_bytes);
+    upload_queue.enqueueWriteBuffer(d_input[0], CL_FALSE, 0, in_bytes,
+                                   input_batch.data(),
+                                   nullptr, &ev_upload[0]);
 
-    // Pre-allocate all buffers to avoid allocation overhead
-    for (int i = 0; i < batch_repeats; ++i) {
-        d_input[i] = cl::Buffer(context, CL_MEM_READ_ONLY,  in_bytes);
-        d_output[i]= cl::Buffer(context, CL_MEM_READ_WRITE, out_bytes);
-    }
-
-    for (int i = 0; i < batch_repeats; ++i) {
-        // 1) Upload data using transfer queue (async)
-        transfer_queue.enqueueWriteBuffer(d_input[i], CL_FALSE, 0, in_bytes,
-                                         input_batch.data(),
-                                         nullptr, &ev_upload[i]);
-        
-        // 2) Execute kernel using compute queue (waits for upload)
-        kernel.setArg(0, d_input[i]);
-        kernel.setArg(1, d_output[i]);
-        
-        std::vector<cl::Event> upload_deps = {ev_upload[i]};
-        compute_queue.enqueueNDRangeKernel(kernel,
-                                          cl::NullRange,
-                                          global_dims, local_dims,
-                                          &upload_deps, &ev_kernel[i]);
-        
-        // 3) Download previous result using transfer queue
-        if (i > 0) {
-            std::vector<cl::Event> kernel_deps = {ev_kernel[i-1]};
-            transfer_queue.enqueueReadBuffer(d_output[i-1], CL_FALSE, 0, out_bytes,
-                                            output.data(),
-                                            &kernel_deps, &ev_download[i-1]);
-        }
+    kernel.setArg(0, d_input[0]);
+    kernel.setArg(1, d_output[0]);
+    std::vector<cl::Event> upload_deps = {ev_upload[0]};
+    compute_queue.enqueueNDRangeKernel(kernel, cl::NullRange,
+                                        global_dims, local_dims,
+                                        &upload_deps, &ev_kernel[0]);
+    
+    for (int i = 1; i < batch_repeats; ++i) {
+            d_input[i] = cl::Buffer(context, CL_MEM_READ_ONLY,  in_bytes);
+            d_output[i]= cl::Buffer(context, CL_MEM_READ_WRITE, out_bytes);
     }
     
+    upload_queue.enqueueWriteBuffer(d_input[1], CL_FALSE, 0, in_bytes,
+                                    input_batch.data(),
+                                    nullptr, &ev_upload[1]);
+    
+    // main loop - write i-1, execute i, read i-1
+    for (int i = 1; i < batch_repeats; ++i) {
+        kernel.setArg(0, d_input[i]);
+        kernel.setArg(1, d_output[i]);
+        std::vector<cl::Event> upload_deps = {ev_upload[i]};
+        compute_queue.enqueueNDRangeKernel(kernel, cl::NullRange,
+                                        global_dims, local_dims,
+                                        &upload_deps, &ev_kernel[i]);
+        
+        std::vector<cl::Event> kernel_deps = {ev_kernel[i-1]};
+        download_queue.enqueueReadBuffer(d_output[i-1], CL_FALSE, 0, out_bytes,
+                                        host_outputs[i-1].data(),
+                                        &kernel_deps, &ev_download[i-1]);
+
+        if (i+1 != batch_repeats) {
+            upload_queue.enqueueWriteBuffer(d_input[i + 1], CL_FALSE, 0, in_bytes,
+                                            input_batch.data(),
+                                            nullptr, &ev_upload[i + 1]);
+        }
+    }
+
     // Download the last batch result
-    if (batch_repeats > 0) {
-        std::vector<cl::Event> kernel_deps = {ev_kernel[batch_repeats-1]};
-        transfer_queue.enqueueReadBuffer(d_output[batch_repeats-1], CL_FALSE, 0, out_bytes,
-                                        output.data(),
-                                        &kernel_deps, &ev_download[batch_repeats-1]);
-    }    /* ---------- drain both pipelines ---------- */
-    cl::Event::waitForEvents(ev_download);
-    transfer_queue.finish();
+    std::vector<cl::Event> kernel_deps = {ev_kernel[batch_repeats-1]};
+    download_queue.enqueueReadBuffer(d_output[batch_repeats-1], CL_FALSE, 0, out_bytes,
+                                    host_outputs[batch_repeats-1].data(),
+                                    &kernel_deps, &ev_download[batch_repeats-1]);
+
+      /* ---------- drain all three pipelines ---------- */
+    upload_queue.finish();
     compute_queue.finish();
+    download_queue.finish();
+
+    // Copy the last result to the main output buffer (or you could use any specific batch)
+    output = host_outputs[batch_repeats-1];
 
     /* ------------------ collect timings ---------------- */
     const auto t_end = std::chrono::high_resolution_clock::now();
@@ -199,7 +223,7 @@ int main(int argc, char* argv[]) {
         // "kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt";
         // "kernel_same_1.txt,kernel_same_2.txt,kernel_same_3.txt";
     default_argv[3] = (char*)"true"; // cpu: threads --- gpu: local mem
-    default_argv[4] = (char*)"2"; // batch counts (w h c batch_size)
+    default_argv[4] = (char*)"10"; // batch counts (w h c batch_size)
     default_argv[5] = (char*)"output_gpu.png"; // output file
     default_argv[6] = (char*)"2"; // stride
     default_argv[7] = (char*)"5"; // simulated single batch size 
