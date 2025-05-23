@@ -38,10 +38,13 @@ void run(char* argv[],
         stride, input_width, input_height, channel_count, 
         filter_width, filter_height, filter_channels, output_width, output_height);
 
-    /* IMPORTANT PART */
+    /* IMPORTANT PART - Create separate queues for maximum parallelism */
     cl_command_queue_properties qprops =
         CL_QUEUE_PROFILING_ENABLE | CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE;
-    queue = cl::CommandQueue(context, device, qprops);
+    
+    // Separate queues for different operations to enable true parallelism
+    cl::CommandQueue compute_queue(context, device, qprops);  // For kernel execution
+    cl::CommandQueue transfer_queue(context, device, qprops); // For data transfers (DMA)
 
     /* -------------------- work-group sizes ---------------------- */
     std::size_t gws_x = output_width,
@@ -96,30 +99,47 @@ void run(char* argv[],
 
     const auto overall_start = std::chrono::high_resolution_clock::now();
 
+    // Pre-allocate all buffers to avoid allocation overhead
     for (int i = 0; i < batch_repeats; ++i) {
-        /* 1) allocate + async upload */
         d_input[i] = cl::Buffer(context, CL_MEM_READ_ONLY,  in_bytes);
         d_output[i]= cl::Buffer(context, CL_MEM_READ_WRITE, out_bytes);
+    }
 
-        queue.enqueueWriteBuffer(d_input[i], CL_FALSE, 0, in_bytes,
-                                 input_batch.data(),
-                                 nullptr, &ev_upload[i]);        /* 2) kernel ← waits for its own upload */
+    for (int i = 0; i < batch_repeats; ++i) {
+        // 1) Upload data using transfer queue (async)
+        transfer_queue.enqueueWriteBuffer(d_input[i], CL_FALSE, 0, in_bytes,
+                                         input_batch.data(),
+                                         nullptr, &ev_upload[i]);
+        
+        // 2) Execute kernel using compute queue (waits for upload)
         kernel.setArg(0, d_input[i]);
         kernel.setArg(1, d_output[i]);
-
-        std::vector<cl::Event> upload_events = {ev_upload[i]};
-        queue.enqueueNDRangeKernel(kernel,
-                                   cl::NullRange,
-                                   global_dims, local_dims,
-                                   &upload_events, &ev_kernel[i]);        /* 3) async download ← waits for the kernel */
-        std::vector<cl::Event> kernel_events = {ev_kernel[i]};
-        queue.enqueueReadBuffer(d_output[i], CL_FALSE, 0, out_bytes,
-                                output.data(),
-                                &kernel_events, &ev_download[i]);
+        
+        std::vector<cl::Event> upload_deps = {ev_upload[i]};
+        compute_queue.enqueueNDRangeKernel(kernel,
+                                          cl::NullRange,
+                                          global_dims, local_dims,
+                                          &upload_deps, &ev_kernel[i]);
+        
+        // 3) Download previous result using transfer queue
+        if (i > 0) {
+            std::vector<cl::Event> kernel_deps = {ev_kernel[i-1]};
+            transfer_queue.enqueueReadBuffer(d_output[i-1], CL_FALSE, 0, out_bytes,
+                                            output.data(),
+                                            &kernel_deps, &ev_download[i-1]);
+        }
     }
-    /* ---------- drain the pipeline only once ---------- */
+    
+    // Download the last batch result
+    if (batch_repeats > 0) {
+        std::vector<cl::Event> kernel_deps = {ev_kernel[batch_repeats-1]};
+        transfer_queue.enqueueReadBuffer(d_output[batch_repeats-1], CL_FALSE, 0, out_bytes,
+                                        output.data(),
+                                        &kernel_deps, &ev_download[batch_repeats-1]);
+    }    /* ---------- drain both pipelines ---------- */
     cl::Event::waitForEvents(ev_download);
-    queue.finish();
+    transfer_queue.finish();
+    compute_queue.finish();
 
     /* ------------------ collect timings ---------------- */
     const auto t_end = std::chrono::high_resolution_clock::now();
