@@ -1,7 +1,89 @@
+#define CL_HPP_ENABLE_EXCEPTIONS
+#define CL_HPP_TARGET_OPENCL_VERSION 300
+
 #include <algorithm>
 #include <optional>
 #include <direct.h>
+#include <cl2.hpp>
+#include <vector>
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <stdexcept>
+#include <algorithm>
+#include <windows.h>
+
 #include "utilities.cpp"
+
+inline cl::Context makeContextAndQueue(cl::CommandQueue* outQueue, cl::Device* outDevice) {
+    std::vector<cl::Platform> platforms;
+    cl::Platform::get(&platforms);
+    if (platforms.empty())
+        throw std::runtime_error("No OpenCL platforms found");
+
+    cl::Device device;
+    char dev_name[128];
+    for (const auto& plat : platforms)
+    {
+        std::vector<cl::Device> devices;
+        plat.getDevices(CL_DEVICE_TYPE_GPU, &devices);
+        plat.getInfo(CL_PLATFORM_NAME, &dev_name);
+        if (!devices.empty() && std::string(dev_name).find("NVIDIA") != std::string::npos) {
+            device = devices[0];
+            break;
+        }
+    }
+    if (!device())
+        throw std::runtime_error("No GPU devices found");
+    
+    std::cout << "Using device: " << device.getInfo<CL_DEVICE_NAME>() << std::endl;
+
+    cl::Context context({device});
+    // Enable profiling for the command queue
+    cl::CommandQueue queue(context, device, CL_QUEUE_PROFILING_ENABLE);
+
+    if (outQueue)  *outQueue  = queue;
+    if (outDevice) *outDevice = device;
+
+    return context;
+}
+
+std::string loadKernelSource() {
+    // Get the path of the current executable
+    char buffer[MAX_PATH];
+    GetModuleFileNameA(NULL, buffer, MAX_PATH);
+    
+    // Extract the filename without extension
+    std::string fullPath(buffer);
+    size_t lastSlash = fullPath.find_last_of("/\\");
+    size_t lastDot = fullPath.find_last_of(".");
+    
+    // Get only the executable name without extension
+    std::string exec_file_name;
+    if (lastSlash != std::string::npos && lastDot != std::string::npos) {
+        exec_file_name = fullPath.substr(lastSlash + 1, lastDot - lastSlash - 1);
+    } else {
+        exec_file_name = "unknown";
+    }
+
+    // if has _HTP, remove it
+    if (exec_file_name.find("_analysis") != std::string::npos) {
+        exec_file_name.erase(exec_file_name.find("_analysis"), 10);
+    }
+
+    // Construct the full path to the kernel file
+    std::string path = "src/" + exec_file_name + "/kernel.ocl";
+
+    std::ifstream file(path);
+    if (!file){
+        throw std::runtime_error("Cannot open kernel file: " + path);
+    }
+
+    std::ostringstream ss;
+    ss << file.rdbuf();
+    return ss.str();
+}
+
 
 std::vector<float> loadFilterFromFile(const std::string& filename, 
     int& kernel_height, int& kernel_width, int& filter_channel) {
@@ -103,10 +185,22 @@ std::vector<unsigned char> repeat_to_make_batch(std::vector<unsigned char> input
     std::vector<unsigned char> reps_input_img(
         static_cast<size_t>(input_width) * input_height * channel_count * reps);
     for (int i = 0; i < reps; ++i)
-        std::copy(
-            input_img.begin(), 
-            input_img.end(), 
+        std::copy(input_img.begin(), input_img.end(), 
             reps_input_img.begin() + i * input_width * input_height * channel_count);
+
+    // add patch for the first i*m pixels for each reps for batch size watermarks
+    for (int i = 1; i < reps; ++i) {
+        int b_offset = i * (input_width * input_height * channel_count);
+
+        for (int j = 0; j < 150*i; ++j)
+            for (int k = 0; k < 150*i; ++k)
+                for (int c = 0; c < 3; ++c) {
+                    int c_offset = c * input_width * input_height;
+                    int index = b_offset + c_offset + j*input_width + k;
+                    reps_input_img[index] = static_cast<unsigned char>(rand() % 256);
+                }
+    }
+    
     return reps_input_img;
 }
 
@@ -182,7 +276,7 @@ void initializeGPU(
     cl::Program& program, 
     cl::Kernel& kernel,
     int uses_local_mem,
-    int stride, int input_width, int input_height, int channel_count, 
+    int stride, int input_width, int input_height, int channel_count,
     int filter_width, int filter_height, int filter_channels,
     int output_width, int output_height
 ) {
@@ -286,8 +380,8 @@ void prep_and_run(char* argv[],
     } else
         input_img = load_input_img(argv[1], input_width, input_height, channel_count); // (width, height, channels, reps)
 
-    int img_c_reps = std::stoi(argv[7]);
-    input_batch = repeat_to_make_batch(input_img, img_c_reps, input_width, input_height, channel_count);
+    int b_size = std::stoi(argv[7]);
+    input_batch = repeat_to_make_batch(input_img, b_size, input_width, input_height, channel_count);
 
     // Load filter
     if (isDimensionString(argv[2])) {
@@ -307,7 +401,7 @@ void prep_and_run(char* argv[],
     int output_width = 1.0f*(input_width - filter_width) / stride + 1;
     int output_height = 1.0f*(input_height - filter_height) / stride + 1;
     std::vector<float> output(
-        static_cast<size_t>(output_width) * output_height * filter_count);
+        static_cast<size_t>(output_width) * output_height * filter_count * b_size);
 
     /*------------------ run and out ------------------*/
     run_f(argv, input_batch, input_width, input_height, channel_count,
@@ -318,6 +412,10 @@ void prep_and_run(char* argv[],
     if (strcmp(argv[5], "null") == 0)
         return;
     else{
+        // take the second 3 channels
+        int single_img_size = output_width*output_height*filter_count;
+        for (int i = 0; i < single_img_size; ++i)
+            output[i] = output[i + single_img_size*2];
         output.resize(static_cast<size_t>(output_width) * output_height * 3);
 
         std::transform(output.begin(), output.end(), output.begin(), 
@@ -331,38 +429,3 @@ void prep_and_run(char* argv[],
     }
 }
 
-int replace_argv(int argc, char* argv[], char* default_argv[],
-    void (*prep_and_run_func)(char* argv[], 
-        std::vector<unsigned char>& input_batch, int& input_width, int& input_height, int& channel_count,
-        std::vector<float>& filter, int& filter_width, int& filter_height, int& filter_channels, int& stride,
-        std::vector<float>& output, int& output_width, int& output_height)
-    )
-{
-    // print working directory
-    char cwd[1024];
-    if (getcwd(cwd, sizeof(cwd)) != NULL) {
-        std::cout << "Current working dir: " << cwd << std::endl;
-    } else {
-        perror("getcwd() error");
-        return 1;
-    }
-    // print executable name
-    char buffer[MAX_PATH];
-    GetModuleFileNameA(NULL, buffer, MAX_PATH);
-    std::string fullPath(buffer);
-
-    try {
-        if (argc == 1) {
-            prep_and_run(default_argv, prep_and_run_func);
-        } else
-            prep_and_run(argv, prep_and_run_func);
-    // ------------------ try catch -------------------------
-    } catch (cl::Error const &e) {
-        std::cerr << "OpenCL Error: " << e.what() << " (" << e.err() << ")" << std::endl;
-        return 1; // Indicate an error
-    } catch (std::exception const &e) {
-        std::cerr << "Standard Exception: " << e.what() << std::endl;
-        return 1;
-    }
-    return 0; // Indicate success
-}

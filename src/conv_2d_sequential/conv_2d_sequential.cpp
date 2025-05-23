@@ -7,7 +7,6 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
-#include <ocl_utilities.hpp>
 #include <cmath>
 #include <direct.h>
 #include "../Conv_2d_gpu/conv_2d_gpu.hpp"
@@ -29,7 +28,7 @@ void run(char* argv[],
 auto time_overall_start = std::chrono::high_resolution_clock::now();
 
     for (int i = 0; i < batch_repeats; ++i)
-        conv2d_cpu_threaded(input_batch, input_width, input_height, channel_count,
+        conv2d_cpu_threaded(input_batch, input_width, input_height, channel_count, std::stoi(argv[7]),
                 filter, filter_width, filter_height, filter_channels,
                 output, threads, stride, output_width, output_height);
 
@@ -52,6 +51,21 @@ int main(int argc, char* argv[]) {
     default_argv[4] = (char*)"2"; // batch counts (w h c batch_size)
     default_argv[5] = (char*)"output_seq.png"; // output file
     default_argv[6] = (char*)"2"; // stride
-    default_argv[7] = (char*)"10"; // simulated single batch size 
-    return replace_argv(argc, argv, default_argv, run);
+    default_argv[7] = (char*)"5"; // simulated single batch size 
+
+    try {
+        if (argc == 1) 
+            prep_and_run(default_argv, run);
+        else
+            prep_and_run(argv, run);
+    } 
+    // ------------------ try catch -------------------------
+    catch (cl::Error const &e) {
+        std::cerr << "OpenCL Error: " << e.what() << " (" << e.err() << ")" << std::endl;
+        return 1; // Indicate an error
+    } catch (std::exception const &e) {
+        std::cerr << "Standard Exception: " << e.what() << std::endl;
+        return 1;
+    }
+    return 0;
 }

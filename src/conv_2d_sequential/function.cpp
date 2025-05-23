@@ -12,11 +12,11 @@ inline int index4d(int k, int z, int y, int x, int depth, int height, int width)
 }
 
 void conv2d_cpu_threaded(
-    std::vector<unsigned char>& in, // (w h img_c)
-    int in_w, int in_h, int channel_count,
+    std::vector<unsigned char>& in, // (w h img_c b_size)
+    int in_w, int in_h, int channel_count, int b_size,
     std::vector<float>& filt, // (fw fh img_c fc)
     int filt_w, int filt_h, int filt_c,
-    std::vector<float>& out, // (ow oh fc)
+    std::vector<float>& out, // (ow oh fc b_size)
     int threads, int stride, int out_w, int out_h)
 {
     // ----------- decide thread count ----------------------------------------
@@ -30,19 +30,26 @@ void conv2d_cpu_threaded(
         for (int out_y = out_y_begin; out_y < out_y_end; ++out_y)
             for (int out_x = 0; out_x < out_w; ++out_x)
 
-                for (int fc = 0; fc < filt_c; ++fc) {
-                    float sum = 0.0f;
+                for (int b_idx = 0; b_idx < b_size; ++b_idx) {
 
-                    for (int in_c = 0; in_c < channel_count; ++in_c)
-                        for (int filt_y = 0; filt_y < filt_h; ++filt_y)
-                            for (int filt_x = 0; filt_x < filt_w; ++filt_x) {
-                                int in_x = out_x * stride + filt_x;
-                                int in_y = out_y * stride + filt_y;
-                                sum += (float)in[index3d(in_c, in_y, in_x, in_h, in_w)] / 255.f *
-                                       filt[index4d(fc, in_c, filt_y, filt_x, channel_count, filt_h, filt_w)];
-                            }
+                    for (int fc = 0; fc < filt_c; ++fc) {
+                        float sum = 0.0f;
 
-                    out[index3d(fc, out_y, out_x, out_h, out_w)] = sum;
+                        for (int in_c = 0; in_c < channel_count; ++in_c)
+                            for (int filt_y = 0; filt_y < filt_h; ++filt_y)
+                                for (int filt_x = 0; filt_x < filt_w; ++filt_x) {
+                                    int in_x = out_x * stride + filt_x;
+                                    int in_y = out_y * stride + filt_y;
+                                    sum += 
+                                        (float)in[index4d(b_idx, in_c, in_y, in_x, channel_count, in_h, in_w)] 
+                                        / 255.f *
+                                        filt[index4d(fc, in_c, filt_y, filt_x, channel_count, filt_h, filt_w)];
+                                }
+
+                        // out[index3d(fc, out_y, out_x, out_h, out_w)] = sum;
+                        out[index4d(b_idx, fc, out_y, out_x, filt_c, out_h, out_w)] = sum;
+                    }
+
                 }
     };
 

@@ -14,7 +14,6 @@
 #include <chrono>
 
 /* ---- project headers ---- */
-#include <ocl_utilities.hpp>
 #include "conv_2d_gpu.hpp"
 #include <direct.h>
 
@@ -29,6 +28,8 @@ void run(char* argv[],
         std::vector<float>& output, int& output_width, int& output_height)
 {
     /*------------------ gpu init ------------------*/
+    int b_size = std::stoi(argv[7]);
+
     cl::Context context;
     cl::CommandQueue queue;
     cl::Device device;
@@ -36,8 +37,8 @@ void run(char* argv[],
     cl::Kernel kernel;
 
     initializeGPU(context, queue, device, program, kernel, (strcmp(argv[3], "true") == 0),
-        stride, input_width, input_height, channel_count, filter_width, filter_height, 
-        filter_channels, output_width, output_height);
+        stride, input_width, input_height, channel_count, 
+        filter_width, filter_height, filter_channels, output_width, output_height);
 
     /* IMPORTANT PART */
     cl_command_queue_properties qprops =
@@ -58,11 +59,11 @@ void run(char* argv[],
             filter_width,  filter_height,  filter_channels, 
             output_width,  output_height,  channel_count,
             ldx, ldy, gws_x, gws_y, gws_z);
-        local_dims = cl::NDRange(ldx, ldy);
+        local_dims = cl::NDRange(ldx, ldy, filter_channels);
     } else
         std::cout << "no local memory" << std::endl;
 
-    cl::NDRange global_dims(gws_x, gws_y, gws_z);
+    cl::NDRange global_dims(gws_x, gws_y, gws_z*b_size);
 
     /* ------------------ constants / filter upload --------------- */
     cl::Buffer d_filter(context,
@@ -92,7 +93,7 @@ void run(char* argv[],
 #endif
 
     /* ------------------ main loop: enqueue ---------------------- */
-    const std::size_t in_bytes  = sizeof(unsigned char) * input_batch.size();
+    const std::size_t in_bytes = sizeof(unsigned char) * input_batch.size();
     const std::size_t out_bytes = sizeof(float) * output.size();
 
     const auto overall_start = std::chrono::high_resolution_clock::now();
@@ -180,6 +181,21 @@ int main(int argc, char* argv[]) {
     default_argv[4] = (char*)"2"; // batch counts (w h c batch_size)
     default_argv[5] = (char*)"output_gpu.png"; // output file
     default_argv[6] = (char*)"2"; // stride
-    default_argv[7] = (char*)"10"; // simulated single batch size 
-    return replace_argv(argc, argv, default_argv, run);
+    default_argv[7] = (char*)"5"; // simulated single batch size 
+    
+    try {
+        if (argc == 1) 
+            prep_and_run(default_argv, run);
+        else
+            prep_and_run(argv, run);
+    } 
+    // ------------------ try catch -------------------------
+    catch (cl::Error const &e) {
+        std::cerr << "OpenCL Error: " << e.what() << " (" << e.err() << ")" << std::endl;
+        return 1; // Indicate an error
+    } catch (std::exception const &e) {
+        std::cerr << "Standard Exception: " << e.what() << std::endl;
+        return 1;
+    }
+    return 0;
 }

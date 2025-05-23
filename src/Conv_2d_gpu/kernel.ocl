@@ -20,7 +20,7 @@ __kernel void kernel_app_local(
     const int filt_c,
     const int out_w,
     const int out_h,
-
+    
     const int tile_w,
     const int tile_h,
     __local unsigned char* local_input_tile,
@@ -30,9 +30,11 @@ __kernel void kernel_app_local(
     // Global and local IDs
     int l_x = get_local_id(0);
     int l_y = get_local_id(1);
+    int l_z = get_local_id(2);
     int out_x = get_global_id(0);
     int out_y = get_global_id(1);
-    int fc = get_global_id(2);
+    int b_idx = get_global_id(2) / filt_c;
+    int fc = get_global_id(2) % filt_c;
     
     // ________________ load filter_k to local memory ________________
     int local_flat_idx = (l_y * get_local_size(0)) + (l_x);
@@ -53,7 +55,8 @@ __kernel void kernel_app_local(
             int current_tile_x = tile_input_start_x + tx;
             int current_tile_y = tile_input_start_y + ty;
 
-            int global_input_idx = index3d(0, current_tile_y, current_tile_x, in_h, in_w);
+            int global_input_idx = index4d(b_idx, 0, current_tile_y, current_tile_x,
+                                                channel_count, in_h, in_w);
             int tile_idx = index3d(0, ty, tx, tile_h, tile_w);
             for (int c = 0; c < channel_count; ++c) {
                 // if (tile_idx > index3d(channel_count-1, tile_h-1, tile_w-1, tile_h, tile_w))
@@ -75,16 +78,16 @@ __kernel void kernel_app_local(
         int local_tile_y_start = out_y * stride - tile_input_start_y;
         for (int filt_y = 0; filt_y < filt_h; ++filt_y){
             for (int filt_x = 0; filt_x < filt_w; ++filt_x) {
-                sum += (float)local_input_tile[
-                    index3d(in_c, 
+                sum += 
+                    (float)local_input_tile[index3d(in_c, 
                         local_tile_y_start+filt_y, 
                         local_tile_x_start+filt_x, 
-                        tile_h, tile_w)] / 255.f 
-                        * local_filter_k[index4d(
-                            fc, in_c, filt_y, filt_x, channel_count, filt_h, filt_w)];
+                        tile_h, tile_w)]
+                    / 255.f *
+                    local_filter_k[index4d(fc, in_c, filt_y, filt_x, channel_count, filt_h, filt_w)];
 
     }}}
-    out[index3d(fc, out_y, out_x, out_h, out_w)] = sum;
+    out[index4d(b_idx, fc, out_y, out_x, filt_c, out_h, out_w)] = sum;
 }
 
 
@@ -93,8 +96,8 @@ __kernel void kernel_app_local(
 
 
 __kernel void kernel_app(
-    __global const unsigned char* in, // (w h img_c)
-    __global float* out, // (ow oh fc)
+    __global const unsigned char* in, // (w h img_c b_size)
+    __global float* out, // (ow oh fc b_size)
     __global const float* filt, // (fw fh img_c fc)
     const int stride,
     const int in_w,
@@ -109,7 +112,8 @@ __kernel void kernel_app(
 {
     int out_x = get_global_id(0);
     int out_y = get_global_id(1);
-    int fc = get_global_id(2);
+    int b_idx = get_global_id(2) / filt_c;
+    int fc = get_global_id(2) % filt_c;
 
     float sum = 0.0f;
 
@@ -118,9 +122,11 @@ __kernel void kernel_app(
             for (int filt_x = 0; filt_x < filt_w; ++filt_x) {
                 int in_x = out_x * stride + filt_x;
                 int in_y = out_y * stride + filt_y;
-                sum += (float)in[index3d(in_c, in_y, in_x, in_h, in_w)] / 255.f *
-                        filt[index4d(fc, in_c, filt_y, filt_x, channel_count, filt_h, filt_w)];
+                sum += 
+                    (float)in[index4d(b_idx, in_c, in_y, in_x, channel_count, in_h, in_w)] 
+                    / 255.f *
+                    filt[index4d(fc, in_c, filt_y, filt_x, channel_count, filt_h, filt_w)];
             }
 
-    out[index3d(fc, out_y, out_x, out_h, out_w)] = sum;
+    out[index4d(b_idx, fc, out_y, out_x, filt_c, out_h, out_w)] = sum;
 }
