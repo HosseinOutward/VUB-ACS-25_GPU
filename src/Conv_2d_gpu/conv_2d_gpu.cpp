@@ -28,8 +28,6 @@ void run(char* argv[],
         std::vector<float>& output, int& output_width, int& output_height)
 {
     /*------------------ gpu init ------------------*/
-    int b_size = std::stoi(argv[7]);
-
     cl::Context context;
     cl::CommandQueue queue;
     cl::Device device;
@@ -47,8 +45,7 @@ void run(char* argv[],
 
     /* -------------------- work-group sizes ---------------------- */
     std::size_t gws_x = output_width,
-                gws_y = output_height,
-                gws_z = filter_channels;
+                gws_y = output_height;
 
     cl::NDRange local_dims = cl::NullRange;
 
@@ -58,12 +55,13 @@ void run(char* argv[],
         configureLocalMemoryAndWorkers(device, kernel, stride,
             filter_width,  filter_height,  filter_channels, 
             output_width,  output_height,  channel_count,
-            ldx, ldy, gws_x, gws_y, gws_z);
+            ldx, ldy, gws_x, gws_y);
         local_dims = cl::NDRange(ldx, ldy, filter_channels);
     } else
         std::cout << "no local memory" << std::endl;
 
-    cl::NDRange global_dims(gws_x, gws_y, gws_z*b_size);
+    int b_size = std::stoi(argv[7]);
+    cl::NDRange global_dims(gws_x, gws_y, filter_channels*b_size);
 
     /* ------------------ constants / filter upload --------------- */
     cl::Buffer d_filter(context,

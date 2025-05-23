@@ -307,13 +307,13 @@ void configureLocalMemoryAndWorkers(
     int filter_width, int filter_height, int filter_channels,
     int output_width, int output_height, int input_channels,
     size_t& local_wg_dim_x, size_t& local_wg_dim_y,
-    size_t& global_work_size_x, size_t& global_work_size_y, size_t& global_work_size_z
+    size_t& global_work_size_x, size_t& global_work_size_y
 ) {
     // _______________________________ calculate optimal local mem size _______________________________
     size_t max_local_mem_size = device.getInfo<CL_DEVICE_LOCAL_MEM_SIZE>() 
                 - filter_width*filter_height*filter_channels*input_channels*sizeof(float);
     
-    int optimal_wg_size;
+    int optimal_wg_size = -1;
     std::vector<float> quads = {1.0f*stride*stride, 1.0f*stride*(filter_width+filter_height),
         1.0f*(filter_width+1)/2*(filter_height+1)/2 - (1.0f*max_local_mem_size)/sizeof(unsigned char)/input_channels};
 
@@ -323,6 +323,7 @@ void configureLocalMemoryAndWorkers(
     else
         std::cerr << "Warning: Negative discriminant." << std::endl;
 
+    // consider hardware limits
     std::vector<size_t> max_item_sizes = device.getInfo<CL_DEVICE_MAX_WORK_ITEM_SIZES>();
     if (!max_item_sizes.empty())
         optimal_wg_size = std::min(optimal_wg_size, static_cast<int>(max_item_sizes[0]));
@@ -331,11 +332,10 @@ void configureLocalMemoryAndWorkers(
     optimal_wg_size = std::min(optimal_wg_size, static_cast<int>(
             std::sqrt(static_cast<double>(max_total_wg_size))));
     
-    // Ensure optimal_wg_size is at least 1 to prevent issues with local_wg_dim being 0
-    if (optimal_wg_size < 1)
-        optimal_wg_size = 1;
+    // consider depth
+    optimal_wg_size = optimal_wg_size / sqrtf(filter_channels);
 
-    std::cout << "WI per WG: " << optimal_wg_size*optimal_wg_size << std::endl;
+    std::cout << "WI per WG: " << optimal_wg_size*optimal_wg_size*filter_channels << std::endl;
 
     // _______________________________ allocate _______________________________
     local_wg_dim_x = optimal_wg_size;
@@ -343,13 +343,12 @@ void configureLocalMemoryAndWorkers(
     
     global_work_size_x = ((output_width + local_wg_dim_x - 1) / local_wg_dim_x) * local_wg_dim_x;
     global_work_size_y = ((output_height + local_wg_dim_y - 1) / local_wg_dim_y) * local_wg_dim_y;
-    global_work_size_z = filter_channels;
     
     size_t tile_w_host = local_wg_dim_x * stride + (filter_height+1)/2;
     size_t tile_h_host = local_wg_dim_y * stride + (filter_height+1)/2;
     size_t local_memory_size_bytes = tile_w_host * tile_h_host * input_channels * sizeof(unsigned char);
-    size_t local_filter_memory_size_bytes = static_cast<size_t>(filter_width) * 
-            filter_height * input_channels * filter_channels * sizeof(float);
+    size_t local_filter_memory_size_bytes = static_cast<size_t>(filter_width) * filter_height 
+                                    * input_channels * filter_channels * sizeof(float);
 
     kernel.setArg(12, static_cast<int>(tile_w_host));
     kernel.setArg(13, static_cast<int>(tile_h_host));
