@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <ocl_utilities.hpp>
 #include "..\conv_2d_sequential\function.cpp"
-#include "..\conv_2d_sequential\utilities.cpp"
+#include "..\conv_2d_gpu\utilities.cpp"
 
 int main()
 {

@@ -13,7 +13,7 @@
 #include <cmath>
 #include <chrono>
 
-/* ---- project headers (unchanged) ---- */
+/* ---- project headers ---- */
 #include <ocl_utilities.hpp>
 #include "conv_2d_gpu.hpp"
 #include <direct.h>
@@ -39,7 +39,7 @@ void run(char* argv[],
         stride, input_width, input_height, channel_count, filter_width, filter_height, 
         filter_channels, output_width, output_height);
 
-    /* Replace the queue with an **out-of-order, profiling** queue */
+    /* IMPORTANT PART */
     cl_command_queue_properties qprops =
         CL_QUEUE_PROFILING_ENABLE | CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE;
     queue = cl::CommandQueue(context, device, qprops);
@@ -64,93 +64,100 @@ void run(char* argv[],
 
     cl::NDRange global_dims(gws_x, gws_y, gws_z);
 
-    /*------------------ set input/output vector ------------------*/
-    int batch_repeats = std::stoi(argv[4]);
-    std::vector<cl::Buffer> d_input(batch_repeats), d_output_buf(batch_repeats);
-    std::vector<cl::Event> exec_events(batch_repeats), write_events(batch_repeats);
-
-    #define DETAILED_TIMINGS
-    #ifdef DETAILED_TIMINGS
-        std::vector<std::chrono::high_resolution_clock::time_point> time_start_read(batch_repeats); // also batch start
-        std::vector<std::chrono::high_resolution_clock::time_point> time_start_exec(batch_repeats);
-        std::vector<std::chrono::high_resolution_clock::time_point> time_start_write(batch_repeats);
-
-        std::vector<std::chrono::high_resolution_clock::time_point> time_end_read(batch_repeats);
-        std::vector<std::chrono::high_resolution_clock::time_point> time_end_exec(batch_repeats);
-        std::vector<std::chrono::high_resolution_clock::time_point> time_end_write(batch_repeats);
-    #endif
-
-    std::chrono::high_resolution_clock::time_point time_overall_start_base = 
-        std::chrono::high_resolution_clock::now();
-
-    // ------------------ load filter -------------------------
-    cl::Buffer d_filter = cl::Buffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                        sizeof(float) * filter.size(), const_cast<float*>(filter.data()));
+    /* ------------------ constants / filter upload --------------- */
+    cl::Buffer d_filter(context,
+                        CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                        sizeof(float) * filter.size(),
+                        const_cast<float*>(filter.data()));
     kernel.setArg(2, d_filter);
 
-    // ------------------ load and process batches -------------------------
+    /* ------------------ batch buffers & events ------------------ */
+    const int batch_repeats = std::stoi(argv[4]);
+
+    std::vector<cl::Buffer> d_input(batch_repeats);
+    std::vector<cl::Buffer> d_output(batch_repeats);
+
+    std::vector<cl::Event> ev_upload(batch_repeats);
+    std::vector<cl::Event> ev_kernel(batch_repeats);
+    std::vector<cl::Event> ev_download(batch_repeats);
+
+#ifdef DETAILED_TIMINGS
+    std::vector<double> hw_start_upload_ms(batch_repeats);
+    std::vector<double> hw_start_kernel_ms(batch_repeats);
+    std::vector<double> hw_start_download_ms(batch_repeats);
+
+    std::vector<double> upload_ms(batch_repeats);
+    std::vector<double> kernel_ms(batch_repeats);
+    std::vector<double> download_ms(batch_repeats);
+#endif
+
+    /* ------------------ main loop: enqueue ---------------------- */
+    const std::size_t in_bytes  = sizeof(unsigned char) * input_batch.size();
+    const std::size_t out_bytes = sizeof(float) * output.size();
+
+    const auto overall_start = std::chrono::high_resolution_clock::now();
+
     for (int i = 0; i < batch_repeats; ++i) {
-        #ifdef DETAILED_TIMINGS
-            time_start_read[i] = std::chrono::high_resolution_clock::now();
-        #endif
-        d_input[i] = cl::Buffer(context, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                        sizeof(unsigned char) * input_batch.size(), 
-                        const_cast<unsigned char*>(input_batch.data()));
+        /* 1) allocate + async upload */
+        d_input[i] = cl::Buffer(context, CL_MEM_READ_ONLY,  in_bytes);
+        d_output[i]= cl::Buffer(context, CL_MEM_READ_WRITE, out_bytes);
 
-        #ifdef DETAILED_TIMINGS
-            time_end_read[i] = std::chrono::high_resolution_clock::now();
-        #endif
-        d_output_buf[i] = cl::Buffer(context, CL_MEM_READ_WRITE,
-                            sizeof(float) * output.size(), nullptr);
-
+        queue.enqueueWriteBuffer(d_input[i], CL_FALSE, 0, in_bytes,
+                                 input_batch.data(),
+                                 nullptr, &ev_upload[i]);        /* 2) kernel ← waits for its own upload */
         kernel.setArg(0, d_input[i]);
-        kernel.setArg(1, d_output_buf[i]);
+        kernel.setArg(1, d_output[i]);
 
-        #ifdef DETAILED_TIMINGS
-            time_start_exec[i] = std::chrono::high_resolution_clock::now();
-        #endif
-        queue.enqueueNDRangeKernel(kernel, cl::NullRange, 
-            global_dims, local_dims, nullptr, &exec_events[i]);
-
-        check_exec_and_queue_write(queue, kernel, d_output_buf[i], batch_repeats, 
-            exec_events, write_events, output, time_start_write, time_end_exec, i, i);
+        std::vector<cl::Event> upload_events = {ev_upload[i]};
+        queue.enqueueNDRangeKernel(kernel,
+                                   cl::NullRange,
+                                   global_dims, local_dims,
+                                   &upload_events, &ev_kernel[i]);        /* 3) async download ← waits for the kernel */
+        std::vector<cl::Event> kernel_events = {ev_kernel[i]};
+        queue.enqueueReadBuffer(d_output[i], CL_FALSE, 0, out_bytes,
+                                output.data(),
+                                &kernel_events, &ev_download[i]);
     }
-
-    for (int i = 0; i < batch_repeats; ++i) {
-        if (!write_events[i]()) {
-            #ifdef DETAILED_TIMINGS
-                time_start_write[i] = std::chrono::high_resolution_clock::now();
-            #endif
-
-            queue.enqueueReadBuffer(d_output_buf[i], CL_FALSE, 0, 
-                sizeof(float) * output.size(), output.data(), nullptr, &write_events[j]);
-            }
-    }
-
-    for (int i = 0; i < batch_repeats; ++i) {
-        write_events[i].wait();
-        #ifdef DETAILED_TIMINGS
-            time_end_write[i] = std::chrono::high_resolution_clock::now();
-        #endif
-    }
-
+    /* ---------- drain the pipeline only once ---------- */
+    cl::Event::waitForEvents(ev_download);
     queue.finish();
 
-    // ------------------ result -------------------------
-    // Print timing results for python
-    auto ms_cast = [](auto duration) { 
-        return std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count()/1'000'000.0; };
-    auto time_diff = ms_cast(std::chrono::high_resolution_clock::now() - time_overall_start_base);
-    std::cout << "Overall_time: " << time_diff << std::endl;
+    /* ------------------ collect timings ---------------- */
+    const auto t_end = std::chrono::high_resolution_clock::now();
+    std::cout << "Overall_time: "
+              << ns_to_ms(std::chrono::duration_cast<
+                    std::chrono::nanoseconds>(t_end - overall_start).count()) << std::endl;
+
+#ifdef DETAILED_TIMINGS
+    for (int i = 0; i < batch_repeats; ++i) {
+        cl_ulong ns0, ns1;
+
+        /* upload (write buffer) */
+        ev_upload[i].getProfilingInfo(CL_PROFILING_COMMAND_START, &ns0);
+        ev_upload[i].getProfilingInfo(CL_PROFILING_COMMAND_END,   &ns1);
+        hw_start_upload_ms[i] = ns_to_ms(ns0);
+        upload_ms[i]  = ns_to_ms(ns1 - ns0);
+
+        /* kernel */
+        ev_kernel[i].getProfilingInfo(CL_PROFILING_COMMAND_START, &ns0);
+        ev_kernel[i].getProfilingInfo(CL_PROFILING_COMMAND_END,   &ns1);
+        hw_start_kernel_ms[i] = ns_to_ms(ns0);
+        kernel_ms[i]  = ns_to_ms(ns1 - ns0);
+
+        /* download (read buffer) */
+        ev_download[i].getProfilingInfo(CL_PROFILING_COMMAND_START, &ns0);
+        ev_download[i].getProfilingInfo(CL_PROFILING_COMMAND_END,   &ns1);
+        hw_start_download_ms[i] = ns_to_ms(ns0);
+        download_ms[i]= ns_to_ms(ns1 - ns0);
+    }
 
     /* ------------------ human-readable output ------------------- */
-    for (int i = 0; i < batch_repeats; ++i)
-    {
-        // Convert hardware start times to relative times from hardware reference
-        auto hw_rel = [&](double hw_start_ms){
-            return hw_start_ms - ns_to_ms(hw_ref_ns);
-        };
+    // calculate relative times
+    cl_ulong t0;
+    ev_upload[0].getProfilingInfo(CL_PROFILING_COMMAND_START, &t0);
+    auto hw_rel = [&](double hw_start_ms){ return hw_start_ms - ns_to_ms(t0); };
 
+    for (int i = 0; i < batch_repeats; ++i) {
         std::cout << "Start_upload_" << i << ": " << hw_rel(hw_start_upload_ms[i]) << std::endl;
         std::cout << "Start_kernel_" << i << ": " << hw_rel(hw_start_kernel_ms[i]) << std::endl;
         std::cout << "Start_download_" << i << ": " << hw_rel(hw_start_download_ms[i]) << std::endl;
