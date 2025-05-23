@@ -171,9 +171,12 @@ void run(char* argv[],
 int main(int argc, char* argv[]) {
     char** default_argv = new char*[8];
     default_argv[0] = argv[0];
-    default_argv[1] = (char*)"input_lena.png"; // input file (w h img_c)
+    default_argv[1] = (char*)
+        "30,30,3"; // kernel file input file (w h img_c)
+        // "input_lena.png";
     default_argv[2] = (char*)
-        "kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt"; // kernel file (fw fh img_c fc)
+        "3,3,4"; // kernel file (fw fh <not given -> img_c> fc)
+        // "kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt";
         // "kernel_same_1.txt,kernel_same_2.txt,kernel_same_3.txt";
     default_argv[3] = (char*)"true"; // cpu: threads --- gpu: local mem
     default_argv[4] = (char*)"2"; // batch counts (w h c batch_size)

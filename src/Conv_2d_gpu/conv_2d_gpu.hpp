@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <algorithm>
 #include <windows.h>
+#include <cstdlib>
 
 #include "utilities.cpp"
 
@@ -157,15 +158,16 @@ std::vector<int> parseDimensions(const std::string& str) {
     return dimensions;
 }
 
-// Function to load input image data from a file
-std::vector<unsigned char> load_input_img(int& input_width, int& input_height, int& channel_count) {
+// Function to generate a random input image data
+std::vector<unsigned char> generate_input_data(int& input_width, int& input_height, int& channel_count) {
     std::vector<unsigned char> input_img((size_t)input_width * input_height * channel_count);
-    srand(static_cast<unsigned int>(time(nullptr)));
+    srand(42);
     for(size_t i = 0; i < input_img.size(); ++i)
         input_img[i] = static_cast<unsigned char>(rand() % 256);
     return input_img;
 }
 
+// Function to load input image data from a file
 std::vector<unsigned char> load_input_img(const std::string& filename,
         int& input_width, int& input_height, int& channel_count) {
     std::vector<unsigned char> input_img;
@@ -188,6 +190,8 @@ std::vector<unsigned char> repeat_to_make_batch(std::vector<unsigned char> input
         std::copy(input_img.begin(), input_img.end(), 
             reps_input_img.begin() + i * input_width * input_height * channel_count);
 
+    // # define WATERMARK_PATCH_INPUT
+    #ifdef WATERMARK_PATCH_INPUT
     // add patch for the first i*m pixels for each reps for batch size watermarks
     for (int i = 1; i < reps; ++i) {
         int b_offset = i * (input_width * input_height * channel_count);
@@ -200,19 +204,21 @@ std::vector<unsigned char> repeat_to_make_batch(std::vector<unsigned char> input
                     reps_input_img[index] = static_cast<unsigned char>(rand() % 256);
                 }
     }
+    #endif
     
     return reps_input_img;
 }
 
-// Function to load a convolution kernel from a file
-std::vector<float> load_filter(int input_width, int input_height, int channel_count, int filter_channel) {
+// generate a convolution kernel
+std::vector<float> generate_filter(int input_width, int input_height, int channel_count, int filter_channel) {
     std::vector<float> kernel_data((size_t)input_width * input_height * filter_channel * channel_count);
-    srand(static_cast<unsigned int>(time(nullptr)));
+    srand(42);
     for(size_t i = 0; i < kernel_data.size(); ++i)
-        kernel_data[i] = static_cast<unsigned char>(rand() % 256);
+        kernel_data[i] = static_cast<float>(rand() % 10);
     return kernel_data;
 }
 
+// Function to load a convolution kernel from a file
 std::vector<float> load_filter(const std::string& filenames, 
         int& input_width, int& input_height, int& filter_channel, int channel_count) {
     // Parse comma-separated filenames
@@ -375,7 +381,7 @@ void prep_and_run(char* argv[],
         input_width = d[0];
         input_height = d[1];
         channel_count = d[2];
-        input_img = load_input_img(d[0], d[1], d[2]);
+        input_img = generate_input_data(d[0], d[1], d[2]);
     } else
         input_img = load_input_img(argv[1], input_width, input_height, channel_count); // (width, height, channels, reps)
 
@@ -388,7 +394,7 @@ void prep_and_run(char* argv[],
         filter_width = d[0];
         filter_height = d[1];
         filter_count = d[2];
-        filter = load_filter(d[0], d[1], channel_count, d[2]);
+        filter = generate_filter(d[0], d[1], channel_count, d[2]);
     } else
         filter = load_filter(argv[2], 
             filter_width, filter_height, filter_count, channel_count); // (fw, fh, img_channels, fc)

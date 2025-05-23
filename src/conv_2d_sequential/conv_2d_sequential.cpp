@@ -43,16 +43,19 @@ std::cout << "Overall_time: " << time_overall.count()/1000000.0 << std::endl;
 int main(int argc, char* argv[]) {
     char** default_argv = new char*[8];
     default_argv[0] = argv[0];
-    default_argv[1] = (char*)"input_lena.png"; // input file (w h img_c)
+    default_argv[1] = (char*)
+        "30,30,3"; // kernel file input file (w h img_c)
+        // "input_lena.png";
     default_argv[2] = (char*)
-        "kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt"; // kernel file (fw fh img_c fc)
+        "3,3,4"; // kernel file (fw fh <not given -> img_c> fc)
+        // "kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt";
         // "kernel_same_1.txt,kernel_same_2.txt,kernel_same_3.txt";
     default_argv[3] = (char*)"0"; // cpu: threads --- gpu: local mem
     default_argv[4] = (char*)"2"; // batch counts (w h c batch_size)
-    default_argv[5] = (char*)"output_seq.png"; // output file
+    default_argv[5] = (char*)"output_gpu.png"; // output file
     default_argv[6] = (char*)"2"; // stride
     default_argv[7] = (char*)"5"; // simulated single batch size 
-
+    
     try {
         if (argc == 1) 
             prep_and_run(default_argv, run);
