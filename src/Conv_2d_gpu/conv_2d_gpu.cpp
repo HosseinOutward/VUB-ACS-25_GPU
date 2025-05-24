@@ -80,12 +80,9 @@ void run(char* argv[],
 
     std::vector<cl::Buffer> d_input(batch_repeats);
     std::vector<cl::Buffer> d_output(batch_repeats);
-    
-    // Create separate host buffers for each batch to avoid serialization
-    std::vector<std::vector<float>> host_outputs(batch_repeats);
-    for (int i = 0; i < batch_repeats; ++i) {
-        host_outputs[i].resize(output.size());
-    }
+
+    const std::size_t in_bytes = sizeof(unsigned char) * input_batch.size();
+    const std::size_t out_bytes = sizeof(float) * output.size();
 
     std::vector<cl::Event> ev_upload(batch_repeats);
     std::vector<cl::Event> ev_kernel(batch_repeats);
@@ -101,19 +98,44 @@ void run(char* argv[],
     std::vector<double> download_ms(batch_repeats);
 #endif
 
+    int out_buffer_count = 4;
+    std::vector<cl::Buffer> pinned_input_host_buffers(batch_repeats);
+    std::vector<unsigned char*> mapped_pinned_input_pointers(batch_repeats);
+    std::vector<cl::Buffer> pinned_output_host_buffers(out_buffer_count);
+    std::vector<float*> mapped_pinned_output_pointers(out_buffer_count);
+
+    // simulate as if pinned memory was used when loading input data
+    for (int i = 0; i < batch_repeats; ++i) {
+        pinned_input_host_buffers[i] = cl::Buffer(context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_HOST_WRITE_ONLY, in_bytes);
+        mapped_pinned_input_pointers[i] = (unsigned char*)queue.enqueueMapBuffer(
+            pinned_input_host_buffers[i], CL_TRUE, CL_MAP_WRITE_INVALIDATE_REGION, 0, in_bytes);
+
+        std::copy(input_batch.data(), input_batch.data() + input_batch.size(), mapped_pinned_input_pointers[i]);
+    }
+
     /* ------------------ main loop: enqueue ---------------------- */
     const auto overall_start = std::chrono::high_resolution_clock::now();
 
-    const std::size_t in_bytes = sizeof(unsigned char) * input_batch.size();
-    const std::size_t out_bytes = sizeof(float) * output.size();
+    // double buffering for output
+    std::vector<cl::Event> last_ev_download(out_buffer_count);
+    for (int i = 0; i < out_buffer_count; ++i) {
+        pinned_output_host_buffers[i] = cl::Buffer(context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_HOST_READ_ONLY, out_bytes);
+        mapped_pinned_output_pointers[i] = (float*)queue.enqueueMapBuffer(
+            pinned_output_host_buffers[i], CL_TRUE, CL_MAP_READ, 0, out_bytes);
+            
+        cl::UserEvent ue(context);
+        ue.setStatus(CL_COMPLETE);
+        last_ev_download[i] = ue;
+    }
+    queue.finish();
 
-    // warmup
+    // warmup the queues
     d_input[0] = cl::Buffer(context, CL_MEM_READ_ONLY,  in_bytes);
-    d_output[0]= cl::Buffer(context, CL_MEM_READ_WRITE, out_bytes);
     upload_queue.enqueueWriteBuffer(d_input[0], CL_FALSE, 0, in_bytes,
-                                   input_batch.data(),
+                                   mapped_pinned_input_pointers[0],
                                    nullptr, &ev_upload[0]);
 
+    d_output[0]= cl::Buffer(context, CL_MEM_READ_WRITE, out_bytes);
     kernel.setArg(0, d_input[0]);
     kernel.setArg(1, d_output[0]);
     std::vector<cl::Event> upload_deps = {ev_upload[0]};
@@ -121,49 +143,64 @@ void run(char* argv[],
                                         global_dims, local_dims,
                                         &upload_deps, &ev_kernel[0]);
     
-    for (int i = 1; i < batch_repeats; ++i) {
-            d_input[i] = cl::Buffer(context, CL_MEM_READ_ONLY,  in_bytes);
-            d_output[i]= cl::Buffer(context, CL_MEM_READ_WRITE, out_bytes);
-    }
-    
+    d_input[1] = cl::Buffer(context, CL_MEM_READ_ONLY,  in_bytes);
     upload_queue.enqueueWriteBuffer(d_input[1], CL_FALSE, 0, in_bytes,
-                                    input_batch.data(),
+                                    mapped_pinned_input_pointers[1],
                                     nullptr, &ev_upload[1]);
-    
-    // main loop - write i-1, execute i, read i-1
+
+    // main loop - (user's new order: kernel, download, upload)
     for (int i = 1; i < batch_repeats; ++i) {
+        // run kernel on current input
+        d_output[i]= cl::Buffer(context, CL_MEM_READ_WRITE, out_bytes);
         kernel.setArg(0, d_input[i]);
         kernel.setArg(1, d_output[i]);
-        std::vector<cl::Event> upload_deps = {ev_upload[i]};
+        std::vector<cl::Event> upload_deps_loop = {ev_upload[i]};
         compute_queue.enqueueNDRangeKernel(kernel, cl::NullRange,
                                         global_dims, local_dims,
-                                        &upload_deps, &ev_kernel[i]);
+                                        &upload_deps_loop, &ev_kernel[i]);
         
-        std::vector<cl::Event> kernel_deps = {ev_kernel[i-1]};
+        // Download the previous output into pinned memory and copy to host
+        // move the previous output to the host
+        std::vector<cl::Event> kernel_deps_loop = {
+            ev_kernel[i-1], last_ev_download[(i-1)%out_buffer_count]};
+        kernel_deps_loop[1].wait(); // ensure previous download is complete
+        std::copy(mapped_pinned_output_pointers[(i-1)%out_buffer_count],
+                    mapped_pinned_output_pointers[(i-1)%out_buffer_count] + output.size(),
+                    output.data());
         download_queue.enqueueReadBuffer(d_output[i-1], CL_FALSE, 0, out_bytes,
-                                        host_outputs[i-1].data(),
-                                        &kernel_deps, &ev_download[i-1]);
+                                        mapped_pinned_output_pointers[(i-1)%out_buffer_count],
+                                        &kernel_deps_loop, &ev_download[i-1]);
+        last_ev_download[(i-1)%out_buffer_count] = ev_download[i-1];
 
+        // upload the next input
         if (i+1 != batch_repeats) {
-            upload_queue.enqueueWriteBuffer(d_input[i + 1], CL_FALSE, 0, in_bytes,
-                                            input_batch.data(),
-                                            nullptr, &ev_upload[i + 1]);
+            d_input[i+1] = cl::Buffer(context, CL_MEM_READ_ONLY,  in_bytes);
+            upload_queue.enqueueWriteBuffer(d_input[i+1], CL_FALSE, 0, in_bytes,
+                                            mapped_pinned_input_pointers[i+1],
+                                            nullptr, &ev_upload[i+1]);
         }
     }
 
     // Download the last batch result
-    std::vector<cl::Event> kernel_deps = {ev_kernel[batch_repeats-1]};
-    download_queue.enqueueReadBuffer(d_output[batch_repeats-1], CL_FALSE, 0, out_bytes,
-                                    host_outputs[batch_repeats-1].data(),
-                                    &kernel_deps, &ev_download[batch_repeats-1]);
+    int i = batch_repeats;
+    std::vector<cl::Event> kernel_deps_loop = {
+        ev_kernel[i-1], last_ev_download[(i-1)%out_buffer_count]};
+    kernel_deps_loop[1].wait(); // ensure previous download is complete
+    std::copy(mapped_pinned_output_pointers[(i-1)%out_buffer_count],
+                mapped_pinned_output_pointers[(i-1)%out_buffer_count] + output.size(),
+                output.data());
+    download_queue.enqueueReadBuffer(d_output[i-1], CL_FALSE, 0, out_bytes,
+                                    mapped_pinned_output_pointers[(i-1)%out_buffer_count],
+                                    &kernel_deps_loop, &ev_download[i-1]);
+    ev_download[i-1].wait(); // ensure last download is complete
+    std::copy(mapped_pinned_output_pointers[(i-1)%out_buffer_count],
+                mapped_pinned_output_pointers[(i-1)%out_buffer_count] + output.size(),
+                output.data());
 
       /* ---------- drain all three pipelines ---------- */
     upload_queue.finish();
     compute_queue.finish();
     download_queue.finish();
-
-    // Copy the last result to the main output buffer (or you could use any specific batch)
-    output = host_outputs[batch_repeats-1];
 
     /* ------------------ collect timings ---------------- */
     const auto t_end = std::chrono::high_resolution_clock::now();
@@ -210,6 +247,15 @@ void run(char* argv[],
         std::cout << "Download_time_" << i << ": " << download_ms[i] << std::endl;
     }
 #endif
+
+    // Cleanup: Unmap pinned buffers
+    for (int i = 0; i < batch_repeats; ++i)
+        queue.enqueueUnmapMemObject(pinned_input_host_buffers[i], 
+            mapped_pinned_input_pointers[i], nullptr, nullptr);
+    for (int i = 0; i < out_buffer_count; ++i)
+        queue.enqueueUnmapMemObject(pinned_output_host_buffers[i], 
+            mapped_pinned_output_pointers[i], nullptr, nullptr);
+    queue.finish(); // Ensure unmaps complete
 }
 
 int main(int argc, char* argv[]) {
