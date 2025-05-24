@@ -2,6 +2,8 @@
 import subprocess
 import os
 
+# change the working directory to the script's directory
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 def run_and_parse_conv(args_list, exe_filename="conv_2d_gpu.exe"):
     exe_relative_path = os.path.join("..", "bin", exe_filename)
@@ -104,7 +106,7 @@ def generate_data(samples, single_batch_size,
 if __name__ == "__main__":
     kernel_x_y_fc = (5, 5, 5) # x y <channels> fc
     input_x_y_c = (1000,1000,3)
-    generate_data(samples=5, single_batch_size=10, batch_counts=7,
+    generate_data(samples=3, single_batch_size=10, batch_counts=7,
                   gpu_local_mem='true', cpu_threads=0,
                   stride=2,
                   kernel_arg="%d,%d,%d" % kernel_x_y_fc,
