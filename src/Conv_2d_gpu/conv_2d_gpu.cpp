@@ -3,6 +3,7 @@
 
 #define DETAILED_TIMINGS
 #define PINNED_MEMORY
+#define FULL_DUPLEX
 
 #include <cl2.hpp>
 
@@ -154,71 +155,55 @@ std::vector<float*> mapped_pinned_output_pointers(out_buffer_count);
                                    mapped_pinned_input_pointers[0],
                                    nullptr, &ev_upload[0]);
 
-    d_output[0]= cl::Buffer(context, CL_MEM_READ_WRITE, out_bytes);
-    kernel.setArg(0, d_input[0]);
-    kernel.setArg(1, d_output[0]);
-    std::vector<cl::Event> upload_deps = {ev_upload[0]};
-    compute_queue.enqueueNDRangeKernel(kernel, cl::NullRange,
-                                        global_dims, local_dims,
-                                        &upload_deps, &ev_kernel[0]);
-    
-    d_input[1] = cl::Buffer(context, CL_MEM_READ_ONLY,  in_bytes);
-    upload_queue.enqueueWriteBuffer(d_input[1], CL_FALSE, 0, in_bytes,
-                                    mapped_pinned_input_pointers[1],
-                                    nullptr, &ev_upload[1]);
-
     // main loop - (user's new order: kernel, download, upload)
-    for (int i = 1; i < batch_repeats; ++i) {
-        // run kernel on current input
-        d_output[i]= cl::Buffer(context, CL_MEM_READ_WRITE, out_bytes);
-        kernel.setArg(0, d_input[i]);
-        kernel.setArg(1, d_output[i]);
-        std::vector<cl::Event> upload_deps_loop = {ev_upload[i]};
-        compute_queue.enqueueNDRangeKernel(kernel, cl::NullRange,
-                                        global_dims, local_dims,
-                                        &upload_deps_loop, &ev_kernel[i]);
+    for (int i = 0; i <= batch_repeats; ++i) {
+        if (i < batch_repeats) {
+            // run kernel on current input
+            d_output[i]= cl::Buffer(context, CL_MEM_READ_WRITE, out_bytes);
+            kernel.setArg(0, d_input[i]);
+            kernel.setArg(1, d_output[i]);
+            std::vector<cl::Event> upload_deps_loop = {ev_upload[i]};
+            compute_queue.enqueueNDRangeKernel(kernel, cl::NullRange,
+                                            global_dims, local_dims,
+                                            &upload_deps_loop, &ev_kernel[i]);
+#ifndef FULL_DUPLEX
+                ev_kernel[i].wait();
+#endif
+        }
         
         // Download the previous output into pinned memory and copy to host
         // move the previous output to the host
-        std::vector<cl::Event> kernel_deps_loop = {
-            ev_kernel[i-1], last_ev_download[(i-1)%out_buffer_count]};
-        kernel_deps_loop[1].wait(); // ensure previous download is complete
-        #ifdef PINNED_MEMORY
-            std::copy(mapped_pinned_output_pointers[(i-1)%out_buffer_count],
-                    mapped_pinned_output_pointers[(i-1)%out_buffer_count] + output.size(),
-                    output.data());
-        #endif
-        download_queue.enqueueReadBuffer(d_output[i-1], CL_FALSE, 0, out_bytes,
-                            mapped_pinned_output_pointers[(i-1)%out_buffer_count],
-                            &kernel_deps_loop, &ev_download[i-1]);
-        #ifdef PINNED_MEMORY
-            last_ev_download[(i-1)%out_buffer_count] = ev_download[i-1];
-        #endif
+        if (i-1 > -1) {
+            std::vector<cl::Event> kernel_deps_loop = {
+                ev_kernel[i-1], last_ev_download[(i-1)%out_buffer_count]};
+            kernel_deps_loop[1].wait(); // ensure previous download is complete
+#ifdef PINNED_MEMORY
+                std::copy(mapped_pinned_output_pointers[(i-1)%out_buffer_count],
+                        mapped_pinned_output_pointers[(i-1)%out_buffer_count] + output.size(),
+                        output.data());
+#endif
+            download_queue.enqueueReadBuffer(d_output[i-1], CL_FALSE, 0, out_bytes,
+                                mapped_pinned_output_pointers[(i-1)%out_buffer_count],
+                                &kernel_deps_loop, &ev_download[i-1]);
+#ifdef PINNED_MEMORY
+                last_ev_download[(i-1)%out_buffer_count] = ev_download[i-1];
+#endif
+#ifndef FULL_DUPLEX
+                ev_download[i-1].wait();
+#endif
+        }
 
         // upload the next input
-        if (i+1 != batch_repeats) {
+        if (i+1 < batch_repeats) {
             d_input[i+1] = cl::Buffer(context, CL_MEM_READ_ONLY,  in_bytes);
             upload_queue.enqueueWriteBuffer(d_input[i+1], CL_FALSE, 0, in_bytes,
                                             mapped_pinned_input_pointers[i+1],
                                             nullptr, &ev_upload[i+1]);
+#ifndef FULL_DUPLEX
+            ev_upload[i+1].wait();
+#endif
         }
     }
-
-    // Download the last batch result
-    int i = batch_repeats;
-    std::vector<cl::Event> kernel_deps_loop = {
-        ev_kernel[i-1], last_ev_download[(i-1)%out_buffer_count]};
-    kernel_deps_loop[1].wait(); // ensure previous download is complete
-    std::copy(mapped_pinned_output_pointers[(i-1)%out_buffer_count],
-                mapped_pinned_output_pointers[(i-1)%out_buffer_count] + output.size(),
-                output.data());
-    download_queue.enqueueReadBuffer(d_output[i-1], CL_FALSE, 0, out_bytes,
-                                    mapped_pinned_output_pointers[(i-1)%out_buffer_count],
-                                    &kernel_deps_loop, &ev_download[i-1]);
-    ev_download[i-1].wait(); // ensure last download is complete
-    std::copy(mapped_pinned_output_pointers[(i-1)%out_buffer_count],
-                mapped_pinned_output_pointers[(i-1)%out_buffer_count] + output.size(),
-                output.data());
 
       /* ---------- drain all three pipelines ---------- */
     upload_queue.finish();
