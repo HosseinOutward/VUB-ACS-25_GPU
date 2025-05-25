@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <stdexcept>
 #include <iostream>
+#include <cmath>
+#include <chrono>
 
 inline int index3d(int z, int y, int x, int height, int width) {
     return z * (height) * (width) + y * (width) + x;
@@ -16,7 +18,7 @@ void conv2d_cpu_threaded(
     int in_w, int in_h, int channel_count, int b_size,
     std::vector<float>& filt, // (fw fh img_c fc)
     int filt_w, int filt_h, int filt_c,
-    std::vector<float>& out, // (ow oh fc b_size)
+    std::vector<unsigned char>& out, // (ow oh fc b_size)
     int threads, int stride, int out_w, int out_h)
 {
     // ----------- decide thread count ----------------------------------------
@@ -47,7 +49,8 @@ void conv2d_cpu_threaded(
                                 }
 
                         // out[index3d(fc, out_y, out_x, out_h, out_w)] = sum;
-                        out[index4d(b_idx, fc, out_y, out_x, filt_c, out_h, out_w)] = sum;
+                        out[index4d(b_idx, fc, out_y, out_x, filt_c, out_h, out_w)] = 
+                            static_cast<unsigned char>(std::min(255.0f, std::max(0.0f, sum * 255.0f)));
                     }
 
                 }

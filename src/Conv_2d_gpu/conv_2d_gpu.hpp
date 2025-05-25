@@ -254,7 +254,7 @@ void loadInputs(
     FilePaths& paths, std::vector<unsigned char>& input_img, int& input_width, 
     int& input_height, int& channel_count, std::vector<float>& filter, // Changed to std::vector<float>
     int& filter_width, int& filter_height, int& filter_channels,
-    int& stride, int& output_width, int& output_height, std::vector<float>& output // Output is now std::vector<float>
+    int& stride, int& output_width, int& output_height, std::vector<unsigned char>& output // Output is now std::vector<float>
 ) {
     paths = loadPathsFromConfig("data/in/config_conv.txt");
     
@@ -266,12 +266,10 @@ void loadInputs(
     input_img.resize(float_input_img.size());
     std::transform(float_input_img.begin(), float_input_img.end(), input_img.begin(), [](float val) { 
         return float_to_uchar_clamped(val);
-    });
-
-    stride = 1; 
+    });    stride = 1; 
     output_width = (input_width - filter_width) / stride + 1;
     output_height = (input_height - filter_height) / stride + 1;
-    output.assign(static_cast<size_t>(output_width) * output_height * filter_channels, 0.0f); // (w h fc)
+    output.assign(static_cast<size_t>(output_width) * output_height * filter_channels, 0);// (w h fc)
 }
 
 // Helper function for GPU initialization
@@ -365,7 +363,7 @@ void prep_and_run(char* argv[],
     void (*run_f)(char* argv[], std::vector<unsigned char>& input_batch, 
         int& input_width, int& input_height, int& channel_count,
         std::vector<float>& filter, int& filter_width, int& filter_height, int& filter_count, 
-        int& stride, std::vector<float>& output, int& output_width, int& output_height)
+        int& stride, std::vector<unsigned char>& output, int& output_width, int& output_height)
     )
 {
     /*------------------ INPUT ------------------*/
@@ -401,10 +399,9 @@ void prep_and_run(char* argv[],
     // asset 
 
     /*------------------ output dim ------------------*/
-    int stride = std::stoi(argv[6]);
-    int output_width = 1.0f*(input_width - filter_width) / stride + 1;
+    int stride = std::stoi(argv[6]);    int output_width = 1.0f*(input_width - filter_width) / stride + 1;
     int output_height = 1.0f*(input_height - filter_height) / stride + 1;
-    std::vector<float> output(
+    std::vector<unsigned char> output(
         static_cast<size_t>(output_width) * output_height * filter_count * b_size);
 
     /*------------------ run and out ------------------*/
@@ -416,20 +413,25 @@ void prep_and_run(char* argv[],
     if (strcmp(argv[5], "null") == 0)
         return;
     else{
+        std::vector<float> float_output(output.size());
+        float_output.resize(static_cast<size_t>(output_width) * output_height * 3);
+        std::transform(output.begin(), output.end(), float_output.begin(), 
+            [](unsigned char val) {return static_cast<float>(val) / 255.0f;});
+
         // take the second 3 channels
         int single_img_size = output_width*output_height*filter_count;
         for (int i = 0; i < single_img_size; ++i)
-            output[i] = output[i + single_img_size*2];
-        output.resize(static_cast<size_t>(output_width) * output_height * 3);
+            float_output[i] = float_output[i + single_img_size*2];
+        float_output.resize(static_cast<size_t>(output_width) * output_height * 3);
 
-        std::transform(output.begin(), output.end(), output.begin(), 
+        std::transform(float_output.begin(), float_output.end(), float_output.begin(), 
             [](float val) {return std::abs(val);});
-        float max_val = *std::max_element(output.begin(), output.end());
-        float min_val = *std::min_element(output.begin(), output.end());
-        std::transform(output.begin(), output.end(), output.begin(), 
+        float max_val = *std::max_element(float_output.begin(), float_output.end());
+        float min_val = *std::min_element(float_output.begin(), float_output.end());
+        std::transform(float_output.begin(), float_output.end(), float_output.begin(), 
             [min_val, max_val](float val) {return (val - min_val) / (max_val - min_val);});
 
-        writePngImage(output, output_width, output_height, 3, std::string("data/out/")+argv[5]);
+        writePngImage(float_output, output_width, output_height, 3, std::string("data/out/")+argv[5]);
     }
 }
 

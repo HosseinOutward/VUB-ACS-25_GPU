@@ -106,7 +106,7 @@ def generate_data(samples, single_batch_size,
 if __name__ == "__main__":
     kernel_x_y_fc = (5, 5, 5) # x y <channels> fc
     input_x_y_c = (1000,1000,3)
-    generate_data(samples=6, single_batch_size=12, batch_counts=15,
+    generate_data(samples=10, single_batch_size=12, batch_counts=15,
                   gpu_local_mem='true', cpu_threads=0,
                   stride=2,
                   kernel_arg="%d,%d,%d" % kernel_x_y_fc,

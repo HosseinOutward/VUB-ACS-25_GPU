@@ -26,7 +26,7 @@ static inline double ns_to_ms(cl_ulong  ns)        { return ns / 1'000'000.0; }
 void run(char* argv[],
         std::vector<unsigned char>& input_batch, int& input_width, int& input_height, int& channel_count,
         std::vector<float>& filter, int& filter_width, int& filter_height, int& filter_channels, int& stride,
-        std::vector<float>& output, int& output_width, int& output_height)
+        std::vector<unsigned char>& output, int& output_width, int& output_height)
 {
     /*------------------ gpu init ------------------*/
     cl::Context context;
@@ -83,7 +83,7 @@ void run(char* argv[],
     std::vector<cl::Buffer> d_output(batch_repeats);
 
     const std::size_t in_bytes = sizeof(unsigned char) * input_batch.size();
-    const std::size_t out_bytes = sizeof(float) * output.size();
+    const std::size_t out_bytes = sizeof(unsigned char) * output.size();
 
     std::vector<cl::Event> ev_upload(batch_repeats);
     std::vector<cl::Event> ev_kernel(batch_repeats);
@@ -107,7 +107,7 @@ int out_buffer_count;
 #endif
 
 std::vector<unsigned char*> mapped_pinned_input_pointers(batch_repeats);
-std::vector<float*> mapped_pinned_output_pointers(out_buffer_count);
+std::vector<unsigned char*> mapped_pinned_output_pointers(out_buffer_count);
 
 #ifdef PINNED_MEMORY
     /* ------------------ pinned memory buffers ------------------ */
@@ -147,9 +147,8 @@ std::vector<float*> mapped_pinned_output_pointers(out_buffer_count);
 #ifdef PINNED_MEMORY
     // double buffering for output
     for (int i = 0; i < out_buffer_count; ++i) {
-        pinned_output_host_buffers[i] = cl::Buffer(context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_HOST_READ_ONLY, out_bytes);
-        mapped_pinned_output_pointers[i] = (float*)queue.enqueueMapBuffer(
-            pinned_output_host_buffers[i], CL_TRUE, CL_MAP_READ, 0, out_bytes);
+        pinned_output_host_buffers[i] = cl::Buffer(context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_HOST_READ_ONLY, out_bytes);        mapped_pinned_output_pointers[i] = (unsigned char*)queue.enqueueMapBuffer(
+        pinned_output_host_buffers[i], CL_TRUE, CL_MAP_READ, 0, out_bytes);
     }
     queue.finish();
 #endif
@@ -280,14 +279,14 @@ int main(int argc, char* argv[]) {
     char** default_argv = new char*[8];
     default_argv[0] = argv[0];
     default_argv[1] = (char*)
-        "30,30,3"; // kernel file input file (w h img_c)
-        // "input_lena.png";
+        // "30,30,3"; // kernel file input file (w h img_c)
+        "input_lena.png";
     default_argv[2] = (char*)
-        "3,3,4"; // kernel file (fw fh <not given -> img_c> fc)
-        // "kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt";
+        // "3,3,4"; // kernel file (fw fh <not given -> img_c> fc)
+        "kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt";
         // "kernel_same_1.txt,kernel_same_2.txt,kernel_same_3.txt";
     default_argv[3] = (char*)"true"; // cpu: threads --- gpu: local mem
-    default_argv[4] = (char*)"10"; // batch counts (w h c batch_size)
+    default_argv[4] = (char*)"4"; // batch counts (w h c batch_size)
     default_argv[5] = (char*)"output_gpu.png"; // output file
     default_argv[6] = (char*)"2"; // stride
     default_argv[7] = (char*)"5"; // simulated single batch size 

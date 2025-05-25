@@ -9,7 +9,7 @@ inline int index4d(int k, int z, int y, int x, int depth, int height, int width)
 
 __kernel void kernel_app_local(
     __global const unsigned char* in, // (w h img_c)
-    __global float* out, // (ow oh fc)
+    __global unsigned char* out, // (ow oh fc)
     __global const float* filt, // (fw fh img_c fc)
     const int stride,
     const int in_w,
@@ -86,7 +86,8 @@ __kernel void kernel_app_local(
             }
     }
 
-    out[index4d(b_idx, fc, out_y, out_x, filt_c, out_h, out_w)] = sum;
+    out[index4d(b_idx, fc, out_y, out_x, filt_c, out_h, out_w)] = 
+        (unsigned char)clamp(sum * 255.0f, 0.0f, 255.0f);
 }
 
 
@@ -96,7 +97,7 @@ __kernel void kernel_app_local(
 
 __kernel void kernel_app(
     __global const unsigned char* in, // (w h img_c b_size)
-    __global float* out, // (ow oh fc b_size)
+    __global unsigned char* out, // (ow oh fc b_size)
     __global const float* filt, // (fw fh img_c fc)
     const int stride,
     const int in_w,
@@ -122,10 +123,11 @@ __kernel void kernel_app(
                 int in_x = out_x * stride + filt_x;
                 int in_y = out_y * stride + filt_y;
                 sum += 
-                    (float)in[index4d(b_idx, in_c, in_y, in_x, channel_count, in_h, in_w)] 
+                    (float)in[index4d(b_idx, in_c, in_y, in_x, channel_count, in_h, in_w)]
                     / 255.f *
                     filt[index4d(fc, in_c, filt_y, filt_x, channel_count, filt_h, filt_w)];
             }
 
-    out[index4d(b_idx, fc, out_y, out_x, filt_c, out_h, out_w)] = sum;
+    out[index4d(b_idx, fc, out_y, out_x, filt_c, out_h, out_w)] = 
+        (unsigned char)clamp(sum * 255.0f, 0.0f, 255.0f);
 }

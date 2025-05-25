@@ -8,6 +8,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <cmath>
+#include <chrono>
 #include <direct.h>
 #include "../Conv_2d_gpu/conv_2d_gpu.hpp"
 #include "function.cpp"
@@ -15,7 +16,7 @@
 void run(char* argv[], 
         std::vector<unsigned char>& input_batch, int& input_width, int& input_height, int& channel_count,
         std::vector<float>& filter, int& filter_width, int& filter_height, int& filter_channels, int& stride,
-        std::vector<float>& output, int& output_width, int& output_height)
+        std::vector<unsigned char>& output, int& output_width, int& output_height)
 {
     /*------------------ run ------------------*/
     int batch_repeats = std::stoi(argv[4]);
@@ -44,15 +45,15 @@ int main(int argc, char* argv[]) {
     char** default_argv = new char*[8];
     default_argv[0] = argv[0];
     default_argv[1] = (char*)
-        "30,30,3"; // kernel file input file (w h img_c)
-        // "input_lena.png";
+        // "30,30,3"; // kernel file input file (w h img_c)
+        "input_lena.png";
     default_argv[2] = (char*)
-        "3,3,4"; // kernel file (fw fh <not given -> img_c> fc)
-        // "kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt";
+        // "3,3,4"; // kernel file (fw fh <not given -> img_c> fc)
+        "kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt";
         // "kernel_same_1.txt,kernel_same_2.txt,kernel_same_3.txt";
     default_argv[3] = (char*)"0"; // cpu: threads --- gpu: local mem
-    default_argv[4] = (char*)"2"; // batch counts (w h c batch_size)
-    default_argv[5] = (char*)"output_gpu.png"; // output file
+    default_argv[4] = (char*)"4"; // batch counts (w h c batch_size)
+    default_argv[5] = (char*)"output_seq.png"; // output file
     default_argv[6] = (char*)"2"; // stride
     default_argv[7] = (char*)"5"; // simulated single batch size 
     
