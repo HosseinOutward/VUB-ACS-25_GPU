@@ -92,8 +92,8 @@ def generate_data(samples, single_batch_size,
 
         # run the CPU version
         args[2] = str(cpu_threads)
-        get_cpu_time = run_and_parse_conv(args, exe_filename="conv_2d_sequential.exe")
-        parsed_data['cpu_overall_time'] += [clean_parsed(get_cpu_time)['overall_time']]
+        # get_cpu_time = run_and_parse_conv(args, exe_filename="conv_2d_sequential.exe")
+        # parsed_data['cpu_overall_time'] += [clean_parsed(get_cpu_time)['overall_time']]
 
     # save the parsed data to a file
     with open("../data/out/parsed_data.txt", "w") as f:

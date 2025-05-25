@@ -20,7 +20,6 @@
 #include <direct.h>
 
 /* --------------------------------------------------------------------- */
-static inline double ns_to_ms(long long ns)        { return ns / 1'000'000.0; }
 static inline double ns_to_ms(cl_ulong  ns)        { return ns / 1'000'000.0; }
 
 /* --------------------------------------------------------------------- */
@@ -102,7 +101,7 @@ void run(char* argv[],
 
 int out_buffer_count;
 #ifdef PINNED_MEMORY
-    out_buffer_count = 4;
+    out_buffer_count = 2;
 #else
     out_buffer_count = batch_repeats;
 #endif
@@ -130,7 +129,13 @@ std::vector<float*> mapped_pinned_output_pointers(out_buffer_count);
 #endif
 
     /* ------------------ main loop: enqueue ---------------------- */
-    const auto overall_start = std::chrono::high_resolution_clock::now();
+    // Get device timestamp at start
+    // const auto overall_start = std::chrono::high_resolution_clock::now();
+    cl::UserEvent overall_start_event(context);
+    overall_start_event.setStatus(CL_COMPLETE);
+    queue.enqueueMarkerWithWaitList(nullptr, &overall_start_event);
+    overall_start_event.wait();
+    const auto overall_start = overall_start_event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
 
     std::vector<cl::Event> last_ev_download(out_buffer_count);
     for (int i = 0; i < out_buffer_count; ++i) {
@@ -211,10 +216,14 @@ std::vector<float*> mapped_pinned_output_pointers(out_buffer_count);
     download_queue.finish();
 
     /* ------------------ collect timings ---------------- */
-    const auto t_end = std::chrono::high_resolution_clock::now();
+    // const auto overall_end = std::chrono::high_resolution_clock::now();
+    cl::UserEvent overall_end_event(context);
+    overall_end_event.setStatus(CL_COMPLETE);
+    queue.enqueueMarkerWithWaitList(nullptr, &overall_end_event);
+    overall_end_event.wait();
+    const auto overall_end = overall_end_event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
     std::cout << "Overall_time: "
-              << ns_to_ms(std::chrono::duration_cast<
-                    std::chrono::nanoseconds>(t_end - overall_start).count()) << std::endl;
+              << ns_to_ms(overall_end - overall_start)<< std::endl;
 
 #ifdef DETAILED_TIMINGS
     for (int i = 0; i < batch_repeats; ++i) {
@@ -241,8 +250,7 @@ std::vector<float*> mapped_pinned_output_pointers(out_buffer_count);
 
     /* ------------------ human-readable output ------------------- */
     // calculate relative times
-    cl_ulong t0;
-    ev_upload[0].getProfilingInfo(CL_PROFILING_COMMAND_START, &t0);
+    cl_ulong t0 = overall_start_event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
     auto hw_rel = [&](double hw_start_ms){ return hw_start_ms - ns_to_ms(t0); };
 
     for (int i = 0; i < batch_repeats; ++i) {
