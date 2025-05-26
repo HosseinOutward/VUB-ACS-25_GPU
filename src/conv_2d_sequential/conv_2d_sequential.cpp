@@ -10,7 +10,7 @@
 #include <cmath>
 #include <chrono>
 #include <direct.h>
-#include "../Conv_2d_gpu/conv_2d_gpu.hpp"
+#include "../Conv_2d_gpu/utilities.hpp"
 #include "function.cpp"
 
 void run(char* argv[], 

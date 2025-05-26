@@ -14,10 +14,11 @@
 #include <stdexcept>
 #include <cmath>
 #include <chrono>
+#include <direct.h>
 
 /* ---- project headers ---- */
+#include "utilities.hpp"
 #include "conv_2d_gpu.hpp"
-#include <direct.h>
 
 /* --------------------------------------------------------------------- */
 static inline double ns_to_ms(cl_ulong  ns)        { return ns / 1'000'000.0; }
