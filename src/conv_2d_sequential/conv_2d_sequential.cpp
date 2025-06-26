@@ -19,7 +19,7 @@ void run(char* argv[],
         std::vector<unsigned char>& output, int& output_width, int& output_height)
 {
     /*------------------ run ------------------*/
-    int batch_repeats = std::stoi(argv[4]);
+    int batch_repeats = std::stoi(argv[3]);
     int threads = std::stoi(argv[3]);
     std::cout << "Running " << batch_repeats << " times\n\n";
     std::cout << "Input size: " << input_width << "x" << input_height << "x" << channel_count << "\n";
@@ -29,7 +29,7 @@ void run(char* argv[],
 auto time_overall_start = std::chrono::high_resolution_clock::now();
 
     for (int i = 0; i < batch_repeats; ++i)
-        conv2d_cpu_threaded(input_batch, input_width, input_height, channel_count, std::stoi(argv[7]),
+        conv2d_cpu_threaded(input_batch, input_width, input_height, channel_count, std::stoi(argv[6]),
                 filter, filter_width, filter_height, filter_channels,
                 output, threads, stride, output_width, output_height);
 
@@ -42,7 +42,7 @@ std::cout << "Overall_time: " << time_overall.count()/1000000.0 << std::endl;
 
 
 int main(int argc, char* argv[]) {
-    char** default_argv = new char*[8];
+    char** default_argv = new char*[11];
     default_argv[0] = argv[0];
     default_argv[1] = (char*)
         // "30,30,3"; // kernel file input file (w h img_c)
@@ -51,11 +51,14 @@ int main(int argc, char* argv[]) {
         // "3,3,4"; // kernel file (fw fh <not given -> img_c> fc)
         "kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt";
         // "kernel_same_1.txt,kernel_same_2.txt,kernel_same_3.txt";
-    default_argv[3] = (char*)"0"; // cpu: threads --- gpu: local mem
-    default_argv[4] = (char*)"4"; // batch counts (w h c batch_size)
-    default_argv[5] = (char*)"output_seq.png"; // output file
-    default_argv[6] = (char*)"2"; // stride
-    default_argv[7] = (char*)"5"; // simulated single batch size 
+    default_argv[3] = (char*)"4"; // batch counts (w h c batch_size)
+    default_argv[4] = (char*)"output_gpu.png"; // output file
+    default_argv[5] = (char*)"2"; // stride
+    default_argv[6] = (char*)"5"; // simulated single batch size 
+    default_argv[7] = (char*)"0"; // cpu: threads --- gpu: local mem
+    default_argv[8] = (char*)"true"; // detailed timings
+    default_argv[9] = (char*)"true"; // pinned memory
+    default_argv[10] = (char*)"true"; // full duplex
     
     try {
         if (argc == 1) 

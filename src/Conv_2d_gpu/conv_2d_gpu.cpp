@@ -26,7 +26,8 @@ struct ConvParams;
 
 void initial_setup(GPUContext& gpu_ctx, const ConvParams& params, int gpu_idx);
 void main_loop(GPUContext& gpu_ctx, const ConvParams& params);
-void wrap_up(GPUContext& gpu_ctx, const ConvParams& params);
+void wrap_up(GPUContext& gpu_ctx);
+void reporting_times(GPUContext& gpu_ctx, const ConvParams& params);
 std::vector<int> get_nvidia_gpu_indices();
 
 /* --------------------------------------------------------------------- */
@@ -69,6 +70,7 @@ struct GPUContext {
     cl_ulong overall_end;
     
     int out_buffer_count;
+    int ctx_idx;
 };
 
 // Structure to hold shared parameters
@@ -105,8 +107,8 @@ struct ConvParams {
         detailed_timings = (std::strcmp(argv[8], "true") == 0);
         pinned_memory = (std::strcmp(argv[9], "true") == 0);
         full_duplex = (std::strcmp(argv[10], "true") == 0);
-        batch_repeats = std::stoi(argv[4]);
-        b_size = std::stoi(argv[7]);
+        batch_repeats = std::stoi(argv[3]);
+        b_size = std::stoi(argv[6]);
         in_bytes = sizeof(unsigned char) * input_batch.size();
         out_bytes = sizeof(unsigned char) * output.size();
         
@@ -192,12 +194,16 @@ void run(char* argv[],
     for (size_t i = 0; i < nvidia_gpu_indices.size(); ++i) {
         std::cout << "Setting up GPU " << nvidia_gpu_indices[i] << std::endl;
         initial_setup(gpu_contexts[i], gpu_params[i], nvidia_gpu_indices[i]);
+        gpu_contexts[i].ctx_idx = i;
     }
     
     // Run all GPUs in parallel using futures
     std::vector<std::future<void>> gpu_futures;
     
     std::cout << "Starting parallel execution on " << num_gpus << " GPUs..." << std::endl;
+
+    // overall time timer start
+    auto overall_start_time = std::chrono::high_resolution_clock::now();
     
     for (size_t i = 0; i < nvidia_gpu_indices.size(); ++i) {
         gpu_futures.push_back(std::async(std::launch::async, [&, i]() {
@@ -206,22 +212,32 @@ void run(char* argv[],
             std::cout << "GPU " << nvidia_gpu_indices[i] << " completed main loop" << std::endl;
         }));
     }
-    
+
     // Wait for all GPUs to complete
-    for (auto& future : gpu_futures) {
+    for (auto& future : gpu_futures)
         future.wait();
-    }
-    
-    std::cout << "All GPUs completed processing" << std::endl;
     
     // Wrap up for each GPU (collect timing data)
     for (size_t i = 0; i < nvidia_gpu_indices.size(); ++i) {
         std::cout << "Wrapping up GPU " << nvidia_gpu_indices[i] << std::endl;
-        wrap_up(gpu_contexts[i], gpu_params[i]);
+        wrap_up(gpu_contexts[i]);
     }
+
+    // overall time timer end
+    auto total_end_time = std::chrono::high_resolution_clock::now();
+    auto total_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(total_end_time - overall_start_time);
+    double total_time_ms = total_duration.count() / 1'000'000.0;
     
     // Collect and merge results from all GPUs
     std::cout << "Collecting results from all GPUs..." << std::endl;
+
+    // reporting the overall time
+    std::cout << "Overall_time: " << total_time_ms << std::endl;
+    
+    for (size_t i = 0; i < nvidia_gpu_indices.size(); ++i) {
+        // std::cout << "Wrapping up GPU " << nvidia_gpu_indices[i] << std::endl;
+        reporting_times(gpu_contexts[i], gpu_params[i]);
+    }
     
     // Calculate output dimensions per batch
     size_t single_batch_output_size = output.size() / total_batches;
@@ -231,8 +247,8 @@ void run(char* argv[],
         int batch_start = gpu_params[gpu_idx].batch_start;
         int batch_count = gpu_params[gpu_idx].gpu_batch_count;
         
-        std::cout << "Merging " << batch_count << " batches from GPU " << nvidia_gpu_indices[gpu_idx] 
-                  << " (batches " << batch_start << " to " << (batch_start + batch_count - 1) << ")" << std::endl;
+        // std::cout << "Merging " << batch_count << " batches from GPU " << nvidia_gpu_indices[gpu_idx] 
+        //           << " (batches " << batch_start << " to " << (batch_start + batch_count - 1) << ")" << std::endl;
         
         // Copy each batch from GPU output to the correct position in main output
         for (int batch_idx = 0; batch_idx < batch_count; ++batch_idx) {
@@ -246,17 +262,14 @@ void run(char* argv[],
                      output.begin() + dst_offset);
         }
     }
-    
-    std::cout << "Successfully merged results from " << num_gpus << " GPUs" << std::endl;
-    std::cout << "Total output size: " << output.size() << " bytes" << std::endl;
-    std::cout << "Workload distribution summary:" << std::endl;
 }
 
+/* --------------------------------------------------------------------- */
 void initial_setup(GPUContext& gpu_ctx, const ConvParams& params, int gpu_idx) {
     /*------------------ gpu init ------------------*/
     /* IMPORTANT PART - Create separate queues for maximum parallelism */
     initializeGPU(gpu_idx, gpu_ctx.context, gpu_ctx.queue, gpu_ctx.device, gpu_ctx.program, gpu_ctx.kernel, 
-                  (strcmp(params.argv[3], "true") == 0),
+                  (strcmp(params.argv[7], "true") == 0),
                   params.stride, params.input_width, params.input_height, params.channel_count, 
                   params.filter_width, params.filter_height, params.filter_channels, 
                   params.output_width, params.output_height);
@@ -276,7 +289,7 @@ void initial_setup(GPUContext& gpu_ctx, const ConvParams& params, int gpu_idx) {
 
     gpu_ctx.local_dims = cl::NullRange;
 
-    if (std::strcmp(params.argv[3], "true") == 0) {
+    if (std::strcmp(params.argv[7], "true") == 0) {
         std::cout << "Using local memory\n";
         std::size_t ldx, ldy;
         configureLocalMemoryAndWorkers(gpu_ctx.device, gpu_ctx.kernel, params.stride,
@@ -341,6 +354,7 @@ void initial_setup(GPUContext& gpu_ctx, const ConvParams& params, int gpu_idx) {
     }
 }
 
+/* --------------------------------------------------------------------- */
 void main_loop(GPUContext& gpu_ctx, const ConvParams& params) {
     /* ------------------ main loop: enqueue ---------------------- */
     // Get device timestamp at start
@@ -423,19 +437,24 @@ void main_loop(GPUContext& gpu_ctx, const ConvParams& params) {
     }
 }
 
-void wrap_up(GPUContext& gpu_ctx, const ConvParams& params) {
+/* --------------------------------------------------------------------- */
+void wrap_up(GPUContext& gpu_ctx) {
       /* ---------- drain all three pipelines ---------- */
     gpu_ctx.upload_queue.finish();
     gpu_ctx.compute_queue.finish();
     gpu_ctx.download_queue.finish();
+}
 
+/* --------------------------------------------------------------------- */
+void reporting_times(GPUContext& gpu_ctx, const ConvParams& params) {
     /* ------------------ collect timings ---------------- */
     gpu_ctx.overall_end_event = cl::UserEvent(gpu_ctx.context);
     gpu_ctx.overall_end_event.setStatus(CL_COMPLETE);
     gpu_ctx.queue.enqueueMarkerWithWaitList(nullptr, &gpu_ctx.overall_end_event);
     gpu_ctx.overall_end_event.wait();
     gpu_ctx.overall_end = gpu_ctx.overall_end_event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
-    std::cout << "Overall_time: "
+
+    std::cout << "gpu_overall_time_" << gpu_ctx.ctx_idx << ": "
               << ns_to_ms(gpu_ctx.overall_end - gpu_ctx.overall_start)<< std::endl;
 
 
@@ -478,7 +497,7 @@ void wrap_up(GPUContext& gpu_ctx, const ConvParams& params) {
         }
     }
 
-    if(params.pinned_memory){
+    if(params.pinned_memory) {
         // Cleanup: Unmap pinned buffers
         for (int i = 0; i < params.gpu_batch_count; ++i)
             gpu_ctx.queue.enqueueUnmapMemObject(gpu_ctx.pinned_input_host_buffers[i], 
@@ -490,8 +509,9 @@ void wrap_up(GPUContext& gpu_ctx, const ConvParams& params) {
     }
 }
 
+/* --------------------------------------------------------------------- */
 int main(int argc, char* argv[]) {
-    char** default_argv = new char*[8];
+    char** default_argv = new char*[11];
     default_argv[0] = argv[0];
     default_argv[1] = (char*)
         // "30,30,3"; // kernel file input file (w h img_c)
@@ -500,11 +520,11 @@ int main(int argc, char* argv[]) {
         // "3,3,4"; // kernel file (fw fh <not given -> img_c> fc)
         "kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt";
         // "kernel_same_1.txt,kernel_same_2.txt,kernel_same_3.txt";
-    default_argv[3] = (char*)"true"; // cpu: threads --- gpu: local mem
-    default_argv[4] = (char*)"4"; // batch counts (w h c batch_size)
-    default_argv[5] = (char*)"output_gpu.png"; // output file
-    default_argv[6] = (char*)"2"; // stride
-    default_argv[7] = (char*)"5"; // simulated single batch size 
+    default_argv[3] = (char*)"4"; // batch counts (w h c batch_size)
+    default_argv[4] = (char*)"output_gpu.png"; // output file
+    default_argv[5] = (char*)"2"; // stride
+    default_argv[6] = (char*)"5"; // simulated single batch size 
+    default_argv[7] = (char*)"true"; // cpu: threads --- gpu: local mem
     default_argv[8] = (char*)"true"; // detailed timings
     default_argv[9] = (char*)"true"; // pinned memory
     default_argv[10] = (char*)"true"; // full duplex

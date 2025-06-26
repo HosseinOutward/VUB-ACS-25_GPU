@@ -42,6 +42,9 @@ def clean_parsed(output_lines):
         f"Expected {len(output_lines)} key-value pairs, but got {len(parsed_data)}."
 
     cleaned_data = {'overall_time': parsed_data.pop('Overall_time')}
+    for key, value in list(parsed_data.items()):
+        if 'gpu_overall_time_' in key:
+            cleaned_data[key] = parsed_data.pop(key)
 
     if len(parsed_data) == 0:
         return cleaned_data
@@ -69,16 +72,20 @@ def generate_data(
 
         kernel_arg="kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt",
         input_arg="input_lena.png", stride=2,
-        gpu_detailed_timing=None, gpu_local_mem=None, gpu_pinned_mem=None,
+        gpu_detailed_timing=None,
+        gpu_local_mem=None, gpu_pinned_mem=None, gpu_full_duplex=None
     ):
     args = [
         input_arg,  # input image
         kernel_arg,  # kernel files
-        None,  # cpu: threads --- gpu: local mem
         f"{batch_counts}",  # batch counts
         "null",  # output file
         str(stride),  # stride
-        f"{single_batch_size}"  # simulated single batch size
+        f"{single_batch_size}",  # simulated single batch size
+        None,  # cpu: threads --- gpu: local mem
+        str(gpu_local_mem).lower(),  # detailed timings
+        str(gpu_pinned_mem).lower(),  # pinned memory
+        str(gpu_full_duplex).lower(),  # full duplex
     ]
 
     print(f'{cpu_or_gpu=}')
@@ -88,14 +95,12 @@ def generate_data(
     for i in range(samples):
         print(f"Sample {i + 1} of {samples}")
         if cpu_or_gpu in ['gpu', 'both']:
-            assert gpu_detailed_timing in [False,True]
-            gpu_detailed_timing=str(gpu_detailed_timing).lower()
-            assert gpu_local_mem in [False,True]
-            gpu_local_mem=str(gpu_local_mem).lower()
-            assert gpu_pinned_mem in [False,True]
-            gpu_pinned_mem=str(gpu_pinned_mem).lower()
+            assert gpu_detailed_timing in [False,True], gpu_detailed_timing
+            assert gpu_local_mem in [False,True], gpu_local_mem
+            assert gpu_pinned_mem in [False,True], gpu_pinned_mem
+            assert gpu_full_duplex in [False,True], gpu_full_duplex
 
-            args[2] = gpu_local_mem
+            args[6] = str(cpu_threads)
             output_lines_gpu = run_and_parse_conv(args, exe_filename="conv_2d_gpu.exe")
             temp = clean_parsed(output_lines_gpu)
 
@@ -108,7 +113,8 @@ def generate_data(
         if cpu_or_gpu in ['cpu', 'both']:
             if 'cpu_overall_time' not in parsed_data.keys():
                 parsed_data['cpu_overall_time']=[]
-            args[2] = str(cpu_threads)
+
+            args[6] = str(cpu_threads)
             get_cpu_time = run_and_parse_conv(args, exe_filename="conv_2d_sequential.exe")
             parsed_data['cpu_overall_time'] += [clean_parsed(get_cpu_time)['overall_time']]
 
@@ -118,26 +124,31 @@ def generate_data(
 if __name__ == "__main__":
     kernel_x_y_fc = (5, 5, 5) # x y <channels> fc
     input_x_y_c = (1000,1000,3)
+    stride=2
+    samples=2
+    single_batch_size=12
+    batch_counts=15
+
+    device = 'gpu'
+    gpu_detailed_timing = True
+    gpu_local_mem = True; gpu_pinned_mem = True; gpu_full_duplex = True
+
     parsed_data = generate_data(
-        stride=2,
+        stride=stride,
         kernel_arg="%d,%d,%d" % kernel_x_y_fc,
         input_arg="%d,%d,%d" % input_x_y_c,
         # kernel_arg="kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt",
         # input_arg="input_lena.png",
 
-        samples=2, single_batch_size=12, batch_counts=15,
-        cpu_or_gpu='gpu', cpu_threads=0,
-        detailed_timing=True, gpu_local_mem=True, pinned_mem=True)
+        samples=samples, single_batch_size=single_batch_size, batch_counts=batch_counts,
+        cpu_or_gpu=device, cpu_threads=0,
+        gpu_detailed_timing=gpu_detailed_timing,
+        gpu_local_mem=gpu_local_mem, gpu_pinned_mem=gpu_pinned_mem, gpu_full_duplex=gpu_full_duplex)
 
-    # save the parsed data to a file
-    # data = 'cpu_only'; parsed_data['cpu_overall_time']
-    # data = 'pinned_only'
-    # data = 'duplex_only'
-    # data = 'no_opt'
-    data = 'pinned_and_duplex'
-
-    print('saved to', data)
-    with open(f"../data/out/{data}.txt", "w") as f:
+    file_name = 'report_'+device+"_lm-"+str(gpu_local_mem)+"_pm-"+str(gpu_pinned_mem)+'_fd-'+str(gpu_full_duplex)
+    file_name = file_name if device == 'gpu' else 'report_cpu'
+    print('saved to', file_name)
+    with open(f"../data/out/timings/{file_name}.txt", "w") as f:
         f.write("{")
         for key, value in parsed_data.items():
             f.write("'" + key + f"': {value},\n")

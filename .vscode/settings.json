@@ -65,6 +65,7 @@
         "stack": "cpp",
         "utility": "cpp",
         "charconv": "cpp",
-        "ratio": "cpp"
+        "ratio": "cpp",
+        "future": "cpp"
     }
 }

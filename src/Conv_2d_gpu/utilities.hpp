@@ -247,7 +247,7 @@ void prep_and_run(char* argv[],
     } else
         input_img = load_input_img(argv[1], input_width, input_height, channel_count); // (width, height, channels, reps)
 
-    int b_size = std::stoi(argv[7]);
+    int b_size = std::stoi(argv[6]);
     input_batch = repeat_to_make_batch(input_img, b_size, input_width, input_height, channel_count);
 
     // Load filter
@@ -264,7 +264,7 @@ void prep_and_run(char* argv[],
     // asset 
 
     /*------------------ output dim ------------------*/
-    int stride = std::stoi(argv[6]);    int output_width = 1.0f*(input_width - filter_width) / stride + 1;
+    int stride = std::stoi(argv[5]);    int output_width = 1.0f*(input_width - filter_width) / stride + 1;
     int output_height = 1.0f*(input_height - filter_height) / stride + 1;
     std::vector<unsigned char> output(
         static_cast<size_t>(output_width) * output_height * filter_count * b_size);
@@ -275,7 +275,7 @@ void prep_and_run(char* argv[],
             output, output_width, output_height);
     
     // ------------------ result -------------------------
-    if (strcmp(argv[5], "null") == 0)
+    if (strcmp(argv[4], "null") == 0)
         return;
     else{
         std::vector<float> float_output(output.size());
@@ -296,7 +296,7 @@ void prep_and_run(char* argv[],
         std::transform(float_output.begin(), float_output.end(), float_output.begin(), 
             [min_val, max_val](float val) {return (val - min_val) / (max_val - min_val);});
 
-        writePngImage(float_output, output_width, output_height, 3, std::string("data/out/")+argv[5]);
+        writePngImage(float_output, output_width, output_height, 3, std::string("data/out/")+argv[4]);
     }
 }
 
