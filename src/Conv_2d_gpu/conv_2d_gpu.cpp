@@ -11,13 +11,99 @@
 #include <cmath>
 #include <chrono>
 #include <direct.h>
+#include <cstring>
 
 /* ---- project headers ---- */
 #include "utilities.hpp"
 #include "conv_2d_gpu.hpp"
 
 /* --------------------------------------------------------------------- */
+// Forward declarations
+struct GPUContext;
+struct ConvParams;
+
+void initial_setup(GPUContext& gpu_ctx, const ConvParams& params, int gpu_idx);
+void main_loop(GPUContext& gpu_ctx, const ConvParams& params);
+void wrap_up(GPUContext& gpu_ctx, const ConvParams& params);
+std::vector<int> get_nvidia_gpu_indices();
+
+/* --------------------------------------------------------------------- */
 static inline double ns_to_ms(cl_ulong  ns)        { return ns / 1'000'000.0; }
+
+// Structure to hold per-GPU data
+struct GPUContext {
+    cl::Context context;
+    cl::CommandQueue queue;
+    cl::CommandQueue compute_queue;
+    cl::CommandQueue upload_queue;
+    cl::CommandQueue download_queue;
+    cl::Device device;
+    cl::Program program;
+    cl::Kernel kernel;
+    cl::Buffer d_filter;
+    
+    std::vector<cl::Buffer> d_input;
+    std::vector<cl::Buffer> d_output;
+    std::vector<cl::Buffer> pinned_input_host_buffers;
+    std::vector<cl::Buffer> pinned_output_host_buffers;
+    
+    std::vector<cl::Event> ev_upload;
+    std::vector<cl::Event> ev_kernel;
+    std::vector<cl::Event> ev_download;
+    std::vector<cl::Event> last_ev_download;
+    
+    std::vector<unsigned char*> mapped_pinned_input_pointers;
+    std::vector<unsigned char*> mapped_pinned_output_pointers;
+    
+    std::vector<double> hw_start_upload_ms, hw_start_kernel_ms, 
+        hw_start_download_ms, upload_ms, kernel_ms, download_ms;
+    
+    cl::NDRange local_dims;
+    cl::NDRange global_dims;
+    
+    cl::UserEvent overall_start_event;
+    cl::UserEvent overall_end_event;
+    cl_ulong overall_start;
+    cl_ulong overall_end;
+    
+    int out_buffer_count;
+};
+
+// Structure to hold shared parameters
+struct ConvParams {
+    char** argv;
+    std::vector<unsigned char>& input_batch;
+    int input_width, input_height, channel_count;
+    std::vector<float>& filter;
+    int filter_width, filter_height, filter_channels, stride;
+    std::vector<unsigned char>& output;
+    int output_width, output_height;
+    int batch_repeats;
+    int b_size;
+    bool detailed_timings;
+    bool pinned_memory;
+    bool full_duplex;
+    size_t in_bytes;
+    size_t out_bytes;
+    
+    ConvParams(char* argv[], 
+               std::vector<unsigned char>& input_batch, int& input_width, int& input_height, int& channel_count,
+               std::vector<float>& filter, int& filter_width, int& filter_height, int& filter_channels, int& stride,
+               std::vector<unsigned char>& output, int& output_width, int& output_height)
+        : argv(argv), input_batch(input_batch), input_width(input_width), input_height(input_height), 
+          channel_count(channel_count), filter(filter), filter_width(filter_width), 
+          filter_height(filter_height), filter_channels(filter_channels), stride(stride),
+          output(output), output_width(output_width), output_height(output_height) {
+        
+        detailed_timings = (std::strcmp(argv[8], "true") == 0);
+        pinned_memory = (std::strcmp(argv[9], "true") == 0);
+        full_duplex = (std::strcmp(argv[10], "true") == 0);
+        batch_repeats = std::stoi(argv[4]);
+        b_size = std::stoi(argv[7]);
+        in_bytes = sizeof(unsigned char) * input_batch.size();
+        out_bytes = sizeof(unsigned char) * output.size();
+    }
+};
 
 /* --------------------------------------------------------------------- */
 void run(char* argv[],
@@ -25,281 +111,274 @@ void run(char* argv[],
         std::vector<float>& filter, int& filter_width, int& filter_height, int& filter_channels, int& stride,
         std::vector<unsigned char>& output, int& output_width, int& output_height)
 {
-    int nv_gpu_idx_vec = get_nv_gpu_idx_vec();
-    if (nv_gpu_idx_vec.empty()) {
+    std::vector<int> nvidia_gpu_indices = get_nvidia_gpu_indices();
+    if (nvidia_gpu_indices.empty()) {
         std::cerr << "No NVIDIA GPU found. Exiting." << std::endl;
         return;
     }
     
-    // do initial setup for each GPU
-        // initate variables needed for the next steps
-        // loop over gpus and run initial_setup
-
-    // do main loop for each GPU
-        // loop for each gpu and give the args
-
-    // wrap up for each GPU
-        // similar to above
+    // Create shared parameters
+    ConvParams params(argv, input_batch, input_width, input_height, channel_count,
+                     filter, filter_width, filter_height, filter_channels, stride,
+                     output, output_width, output_height);
+    
+    // Create GPU contexts for each GPU
+    std::vector<GPUContext> gpu_contexts(nvidia_gpu_indices.size());
+    
+    // Do initial setup for each GPU
+    for (size_t i = 0; i < nvidia_gpu_indices.size(); ++i) {
+        std::cout << "Setting up GPU " << nvidia_gpu_indices[i] << std::endl;
+        initial_setup(gpu_contexts[i], params, nvidia_gpu_indices[i]);
+    }
+    
+    // Do main loop for each GPU
+    for (size_t i = 0; i < nvidia_gpu_indices.size(); ++i) {
+        std::cout << "Running main loop on GPU " << nvidia_gpu_indices[i] << std::endl;
+        main_loop(gpu_contexts[i], params);
+    }
+    
+    // Wrap up for each GPU
+    for (size_t i = 0; i < nvidia_gpu_indices.size(); ++i) {
+        std::cout << "Wrapping up GPU " << nvidia_gpu_indices[i] << std::endl;
+        wrap_up(gpu_contexts[i], params);
+    }
 }
 
-void initial_setup() {
-    bool detailed_timings = (std::strcmp(argv[8], "true") == 0);
-    bool pinned_memory    = (std::strcmp(argv[9], "true") == 0);
-    bool full_duplex      = (std::strcmp(argv[10], "true") == 0);
-
+void initial_setup(GPUContext& gpu_ctx, const ConvParams& params, int gpu_idx) {
     /*------------------ gpu init ------------------*/
-    cl::Context context;
-    cl::CommandQueue queue;
-    cl::Device device;
-    cl::Program program;
-    cl::Kernel kernel;
-    
     /* IMPORTANT PART - Create separate queues for maximum parallelism */
-    initializeGPU(gpu_idx, context, queue, device, program, kernel, (strcmp(argv[3], "true") == 0),
-        stride, input_width, input_height, channel_count, 
-        filter_width, filter_height, filter_channels, output_width, output_height);
+    initializeGPU(gpu_idx, gpu_ctx.context, gpu_ctx.queue, gpu_ctx.device, gpu_ctx.program, gpu_ctx.kernel, 
+                  (strcmp(params.argv[3], "true") == 0),
+                  params.stride, params.input_width, params.input_height, params.channel_count, 
+                  params.filter_width, params.filter_height, params.filter_channels, 
+                  params.output_width, params.output_height);
     
     // Check if device supports out-of-order execution for full-duplex
     cl_command_queue_properties qprops = CL_QUEUE_PROFILING_ENABLE;
     qprops |= CL_QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE;
     
     // Three separate queues for true full duplex operation
-    cl::CommandQueue compute_queue(context, device, qprops);   // For kernel execution
-    cl::CommandQueue upload_queue(context, device, qprops);    // For data uploads (DMA in)
-    cl::CommandQueue download_queue(context, device, qprops);  // For data downloads (DMA out)
+    gpu_ctx.compute_queue = cl::CommandQueue(gpu_ctx.context, gpu_ctx.device, qprops);   // For kernel execution
+    gpu_ctx.upload_queue = cl::CommandQueue(gpu_ctx.context, gpu_ctx.device, qprops);    // For data uploads (DMA in)
+    gpu_ctx.download_queue = cl::CommandQueue(gpu_ctx.context, gpu_ctx.device, qprops);  // For data downloads (DMA out)
 
     /* -------------------- work-group sizes ---------------------- */
-    std::size_t gws_x = output_width,
-                gws_y = output_height;
+    std::size_t gws_x = params.output_width,
+                gws_y = params.output_height;
 
-    cl::NDRange local_dims = cl::NullRange;
+    gpu_ctx.local_dims = cl::NullRange;
 
-    if (std::strcmp(argv[3], "true") == 0) {
+    if (std::strcmp(params.argv[3], "true") == 0) {
         std::cout << "Using local memory\n";
         std::size_t ldx, ldy;
-        configureLocalMemoryAndWorkers(device, kernel, stride,
-            filter_width,  filter_height,  filter_channels, 
-            output_width,  output_height,  channel_count,
+        configureLocalMemoryAndWorkers(gpu_ctx.device, gpu_ctx.kernel, params.stride,
+            params.filter_width,  params.filter_height,  params.filter_channels, 
+            params.output_width,  params.output_height,  params.channel_count,
             ldx, ldy, gws_x, gws_y);
-        local_dims = cl::NDRange(ldx, ldy, filter_channels);
+        gpu_ctx.local_dims = cl::NDRange(ldx, ldy, params.filter_channels);
     } else
         std::cout << "no local memory" << std::endl;
 
-    int b_size = std::stoi(argv[7]);
-    cl::NDRange global_dims(gws_x, gws_y, filter_channels*b_size);
+    gpu_ctx.global_dims = cl::NDRange(gws_x, gws_y, params.filter_channels * params.b_size);
 
     /* ------------------ constants / filter upload --------------- */
-    cl::Buffer d_filter(context,
+    gpu_ctx.d_filter = cl::Buffer(gpu_ctx.context,
                         CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                        sizeof(float) * filter.size(),
-                        const_cast<float*>(filter.data()));
-    kernel.setArg(2, d_filter);
+                        sizeof(float) * params.filter.size(),
+                        const_cast<float*>(params.filter.data()));
+    gpu_ctx.kernel.setArg(2, gpu_ctx.d_filter);
     
     /* ------------------ batch buffers & events ------------------ */
-    const int batch_repeats = std::stoi(argv[4]);
+    gpu_ctx.d_input.resize(params.batch_repeats);
+    gpu_ctx.d_output.resize(params.batch_repeats);
 
-    std::vector<cl::Buffer> d_input(batch_repeats);
-    std::vector<cl::Buffer> d_output(batch_repeats);
+    gpu_ctx.ev_upload.resize(params.batch_repeats);
+    gpu_ctx.ev_kernel.resize(params.batch_repeats);
+    gpu_ctx.ev_download.resize(params.batch_repeats);
 
-    const std::size_t in_bytes = sizeof(unsigned char) * input_batch.size();
-    const std::size_t out_bytes = sizeof(unsigned char) * output.size();
-
-    std::vector<cl::Event> ev_upload(batch_repeats);
-    std::vector<cl::Event> ev_kernel(batch_repeats);
-    std::vector<cl::Event> ev_download(batch_repeats);
-
-    std::vector<double> hw_start_upload_ms, hw_start_kernel_ms, 
-        hw_start_download_ms, upload_ms, kernel_ms, download_ms;
-    if(detailed_timings) {
-        std::vector<double> hw_start_upload_ms(batch_repeats);
-        std::vector<double> hw_start_kernel_ms(batch_repeats);
-        std::vector<double> hw_start_download_ms(batch_repeats);
-
-        std::vector<double> upload_ms(batch_repeats);
-        std::vector<double> kernel_ms(batch_repeats);
-        std::vector<double> download_ms(batch_repeats);
+    if(params.detailed_timings) {
+        gpu_ctx.hw_start_upload_ms.resize(params.batch_repeats);
+        gpu_ctx.hw_start_kernel_ms.resize(params.batch_repeats);
+        gpu_ctx.hw_start_download_ms.resize(params.batch_repeats);
+        gpu_ctx.upload_ms.resize(params.batch_repeats);
+        gpu_ctx.kernel_ms.resize(params.batch_repeats);
+        gpu_ctx.download_ms.resize(params.batch_repeats);
     }
 
-    int out_buffer_count;
-    if(pinned_memory)
-        out_buffer_count = 2;
+    if(params.pinned_memory)
+        gpu_ctx.out_buffer_count = 2;
     else
-        out_buffer_count = batch_repeats;
+        gpu_ctx.out_buffer_count = params.batch_repeats;
 
-    std::vector<unsigned char*> mapped_pinned_input_pointers(batch_repeats);
-    std::vector<unsigned char*> mapped_pinned_output_pointers(out_buffer_count);
+    gpu_ctx.mapped_pinned_input_pointers.resize(params.batch_repeats);
+    gpu_ctx.mapped_pinned_output_pointers.resize(gpu_ctx.out_buffer_count);
 
-    
-    std::vector<cl::Buffer> pinned_input_host_buffers;
-    std::vector<cl::Buffer> pinned_output_host_buffers;
-    if(pinned_memory) {
+    if(params.pinned_memory) {
         /* ------------------ pinned memory buffers ------------------ */
-        std::vector<cl::Buffer> pinned_input_host_buffers(batch_repeats);
-        std::vector<cl::Buffer> pinned_output_host_buffers(out_buffer_count);
+        gpu_ctx.pinned_input_host_buffers.resize(params.batch_repeats);
+        gpu_ctx.pinned_output_host_buffers.resize(gpu_ctx.out_buffer_count);
         // simulate as if pinned memory was used when loading input data
-        for (int i = 0; i < batch_repeats; ++i) {
-            pinned_input_host_buffers[i] = cl::Buffer(context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_HOST_WRITE_ONLY, in_bytes);
-            mapped_pinned_input_pointers[i] = (unsigned char*)queue.enqueueMapBuffer(
-                pinned_input_host_buffers[i], CL_TRUE, CL_MAP_WRITE_INVALIDATE_REGION, 0, in_bytes);
+        for (int i = 0; i < params.batch_repeats; ++i) {
+            gpu_ctx.pinned_input_host_buffers[i] = cl::Buffer(gpu_ctx.context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_HOST_WRITE_ONLY, params.in_bytes);
+            gpu_ctx.mapped_pinned_input_pointers[i] = (unsigned char*)gpu_ctx.queue.enqueueMapBuffer(
+                gpu_ctx.pinned_input_host_buffers[i], CL_TRUE, CL_MAP_WRITE_INVALIDATE_REGION, 0, params.in_bytes);
 
-            std::copy(input_batch.data(), input_batch.data() + input_batch.size(), mapped_pinned_input_pointers[i]);
+            std::copy(params.input_batch.data(), params.input_batch.data() + params.input_batch.size(), gpu_ctx.mapped_pinned_input_pointers[i]);
         }
     } else {
-        for (int i = 0; i < batch_repeats; ++i)
-            mapped_pinned_input_pointers[i] = input_batch.data();
-        for (int i = 0; i < out_buffer_count; ++i)
-            mapped_pinned_output_pointers[i] = output.data();
+        for (int i = 0; i < params.batch_repeats; ++i)
+            gpu_ctx.mapped_pinned_input_pointers[i] = const_cast<unsigned char*>(params.input_batch.data());
+        for (int i = 0; i < gpu_ctx.out_buffer_count; ++i)
+            gpu_ctx.mapped_pinned_output_pointers[i] = params.output.data();
     }
 }
 
-void main_loop() {
+void main_loop(GPUContext& gpu_ctx, const ConvParams& params) {
     /* ------------------ main loop: enqueue ---------------------- */
     // Get device timestamp at start
-    // const auto overall_start = std::chrono::high_resolution_clock::now();
-    cl::UserEvent overall_start_event(context);
-    overall_start_event.setStatus(CL_COMPLETE);
-    queue.enqueueMarkerWithWaitList(nullptr, &overall_start_event);
-    overall_start_event.wait();
-    const auto overall_start = overall_start_event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
+    gpu_ctx.overall_start_event = cl::UserEvent(gpu_ctx.context);
+    gpu_ctx.overall_start_event.setStatus(CL_COMPLETE);
+    gpu_ctx.queue.enqueueMarkerWithWaitList(nullptr, &gpu_ctx.overall_start_event);
+    gpu_ctx.overall_start_event.wait();
+    gpu_ctx.overall_start = gpu_ctx.overall_start_event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
 
-    std::vector<cl::Event> last_ev_download(out_buffer_count);
-    for (int i = 0; i < out_buffer_count; ++i) {
-        cl::UserEvent ue(context);
+    gpu_ctx.last_ev_download.resize(gpu_ctx.out_buffer_count);
+    for (int i = 0; i < gpu_ctx.out_buffer_count; ++i) {
+        cl::UserEvent ue(gpu_ctx.context);
         ue.setStatus(CL_COMPLETE);
-        last_ev_download[i] = ue;
+        gpu_ctx.last_ev_download[i] = ue;
     }
 
-    if(pinned_memory) {
+    if(params.pinned_memory) {
         // double buffering for output
-        for (int i = 0; i < out_buffer_count; ++i) {
-            pinned_output_host_buffers[i] = cl::Buffer(context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_HOST_READ_ONLY, out_bytes);
-            mapped_pinned_output_pointers[i] = (unsigned char*)queue.enqueueMapBuffer(
-                pinned_output_host_buffers[i], CL_TRUE, CL_MAP_READ, 0, out_bytes);
+        for (int i = 0; i < gpu_ctx.out_buffer_count; ++i) {
+            gpu_ctx.pinned_output_host_buffers[i] = cl::Buffer(gpu_ctx.context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_HOST_READ_ONLY, params.out_bytes);
+            gpu_ctx.mapped_pinned_output_pointers[i] = (unsigned char*)gpu_ctx.queue.enqueueMapBuffer(
+                gpu_ctx.pinned_output_host_buffers[i], CL_TRUE, CL_MAP_READ, 0, params.out_bytes);
         }
-        queue.finish();
+        gpu_ctx.queue.finish();
     }
 
     // warmup the queues
-    d_input[0] = cl::Buffer(context, CL_MEM_READ_ONLY,  in_bytes);
-    upload_queue.enqueueWriteBuffer(d_input[0], CL_FALSE, 0, in_bytes,
-                                   mapped_pinned_input_pointers[0],
-                                   nullptr, &ev_upload[0]);
+    gpu_ctx.d_input[0] = cl::Buffer(gpu_ctx.context, CL_MEM_READ_ONLY,  params.in_bytes);
+    gpu_ctx.upload_queue.enqueueWriteBuffer(gpu_ctx.d_input[0], CL_FALSE, 0, params.in_bytes,
+                                   gpu_ctx.mapped_pinned_input_pointers[0],
+                                   nullptr, &gpu_ctx.ev_upload[0]);
 
     // main loop - (user's new order: kernel, download, upload)
-    for (int i = 0; i <= batch_repeats; ++i) {
-        if (i < batch_repeats) {
+    for (int i = 0; i <= params.batch_repeats; ++i) {
+        if (i < params.batch_repeats) {
             // run kernel on current input
-            d_output[i]= cl::Buffer(context, CL_MEM_READ_WRITE, out_bytes);
-            kernel.setArg(0, d_input[i]);
-            kernel.setArg(1, d_output[i]);
-            std::vector<cl::Event> upload_deps_loop = {ev_upload[i]};
-            compute_queue.enqueueNDRangeKernel(kernel, cl::NullRange,
-                                            global_dims, local_dims,
-                                            &upload_deps_loop, &ev_kernel[i]);
+            gpu_ctx.d_output[i]= cl::Buffer(gpu_ctx.context, CL_MEM_READ_WRITE, params.out_bytes);
+            gpu_ctx.kernel.setArg(0, gpu_ctx.d_input[i]);
+            gpu_ctx.kernel.setArg(1, gpu_ctx.d_output[i]);
+            std::vector<cl::Event> upload_deps_loop = {gpu_ctx.ev_upload[i]};
+            gpu_ctx.compute_queue.enqueueNDRangeKernel(gpu_ctx.kernel, cl::NullRange,
+                                            gpu_ctx.global_dims, gpu_ctx.local_dims,
+                                            &upload_deps_loop, &gpu_ctx.ev_kernel[i]);
 
-            if(!full_duplex)
-                ev_kernel[i].wait();
+            if(!params.full_duplex)
+                gpu_ctx.ev_kernel[i].wait();
         }
         
         // Download the previous output into pinned memory and copy to host
         // move the previous output to the host
         if (i-1 > -1) {
             std::vector<cl::Event> kernel_deps_loop = {
-                ev_kernel[i-1], last_ev_download[(i-1)%out_buffer_count]};
+                gpu_ctx.ev_kernel[i-1], gpu_ctx.last_ev_download[(i-1)%gpu_ctx.out_buffer_count]};
             kernel_deps_loop[1].wait(); // ensure previous download is complete
-            if(pinned_memory) {
-                std::copy(mapped_pinned_output_pointers[(i-1)%out_buffer_count],
-                        mapped_pinned_output_pointers[(i-1)%out_buffer_count] + output.size(),
-                        output.data());
+            if(params.pinned_memory) {
+                std::copy(gpu_ctx.mapped_pinned_output_pointers[(i-1)%gpu_ctx.out_buffer_count],
+                        gpu_ctx.mapped_pinned_output_pointers[(i-1)%gpu_ctx.out_buffer_count] + params.output.size(),
+                        const_cast<unsigned char*>(params.output.data()));
             }
-            download_queue.enqueueReadBuffer(d_output[i-1], CL_FALSE, 0, out_bytes,
-                                mapped_pinned_output_pointers[(i-1)%out_buffer_count],
-                                &kernel_deps_loop, &ev_download[i-1]);
-            if(pinned_memory)
-                last_ev_download[(i-1)%out_buffer_count] = ev_download[i-1];
+            gpu_ctx.download_queue.enqueueReadBuffer(gpu_ctx.d_output[i-1], CL_FALSE, 0, params.out_bytes,
+                                gpu_ctx.mapped_pinned_output_pointers[(i-1)%gpu_ctx.out_buffer_count],
+                                &kernel_deps_loop, &gpu_ctx.ev_download[i-1]);
+            if(params.pinned_memory)
+                gpu_ctx.last_ev_download[(i-1)%gpu_ctx.out_buffer_count] = gpu_ctx.ev_download[i-1];
                 
-            if(!full_duplex)
-                ev_download[i-1].wait();
+            if(!params.full_duplex)
+                gpu_ctx.ev_download[i-1].wait();
         }
 
         // upload the next input
-        if (i+1 < batch_repeats) {
-            d_input[i+1] = cl::Buffer(context, CL_MEM_READ_ONLY,  in_bytes);
-            upload_queue.enqueueWriteBuffer(d_input[i+1], CL_FALSE, 0, in_bytes,
-                                            mapped_pinned_input_pointers[i+1],
-                                            nullptr, &ev_upload[i+1]);
+        if (i+1 < params.batch_repeats) {
+            gpu_ctx.d_input[i+1] = cl::Buffer(gpu_ctx.context, CL_MEM_READ_ONLY,  params.in_bytes);
+            gpu_ctx.upload_queue.enqueueWriteBuffer(gpu_ctx.d_input[i+1], CL_FALSE, 0, params.in_bytes,
+                                            gpu_ctx.mapped_pinned_input_pointers[i+1],
+                                            nullptr, &gpu_ctx.ev_upload[i+1]);
             
-            if(!full_duplex)
-                ev_upload[i+1].wait();
+            if(!params.full_duplex)
+                gpu_ctx.ev_upload[i+1].wait();
         }
     }
 }
 
-void wrap_up() {
+void wrap_up(GPUContext& gpu_ctx, const ConvParams& params) {
       /* ---------- drain all three pipelines ---------- */
-    upload_queue.finish();
-    compute_queue.finish();
-    download_queue.finish();
+    gpu_ctx.upload_queue.finish();
+    gpu_ctx.compute_queue.finish();
+    gpu_ctx.download_queue.finish();
 
     /* ------------------ collect timings ---------------- */
-    // const auto overall_end = std::chrono::high_resolution_clock::now();
-    cl::UserEvent overall_end_event(context);
-    overall_end_event.setStatus(CL_COMPLETE);
-    queue.enqueueMarkerWithWaitList(nullptr, &overall_end_event);
-    overall_end_event.wait();
-    const auto overall_end = overall_end_event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
+    gpu_ctx.overall_end_event = cl::UserEvent(gpu_ctx.context);
+    gpu_ctx.overall_end_event.setStatus(CL_COMPLETE);
+    gpu_ctx.queue.enqueueMarkerWithWaitList(nullptr, &gpu_ctx.overall_end_event);
+    gpu_ctx.overall_end_event.wait();
+    gpu_ctx.overall_end = gpu_ctx.overall_end_event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
     std::cout << "Overall_time: "
-              << ns_to_ms(overall_end - overall_start)<< std::endl;
+              << ns_to_ms(gpu_ctx.overall_end - gpu_ctx.overall_start)<< std::endl;
 
 
-    if(detailed_timings) {
-        for (int i = 0; i < batch_repeats; ++i) {
+    if(params.detailed_timings) {
+        for (int i = 0; i < params.batch_repeats; ++i) {
             cl_ulong ns0, ns1;
 
             /* upload (write buffer) */
-            ev_upload[i].getProfilingInfo(CL_PROFILING_COMMAND_START, &ns0);
-            ev_upload[i].getProfilingInfo(CL_PROFILING_COMMAND_END,   &ns1);
-            hw_start_upload_ms[i] = ns_to_ms(ns0);
-            upload_ms[i]  = ns_to_ms(ns1 - ns0);
+            gpu_ctx.ev_upload[i].getProfilingInfo(CL_PROFILING_COMMAND_START, &ns0);
+            gpu_ctx.ev_upload[i].getProfilingInfo(CL_PROFILING_COMMAND_END,   &ns1);
+            gpu_ctx.hw_start_upload_ms[i] = ns_to_ms(ns0);
+            gpu_ctx.upload_ms[i]  = ns_to_ms(ns1 - ns0);
 
             /* kernel */
-            ev_kernel[i].getProfilingInfo(CL_PROFILING_COMMAND_START, &ns0);
-            ev_kernel[i].getProfilingInfo(CL_PROFILING_COMMAND_END,   &ns1);
-            hw_start_kernel_ms[i] = ns_to_ms(ns0);
-            kernel_ms[i]  = ns_to_ms(ns1 - ns0);
+            gpu_ctx.ev_kernel[i].getProfilingInfo(CL_PROFILING_COMMAND_START, &ns0);
+            gpu_ctx.ev_kernel[i].getProfilingInfo(CL_PROFILING_COMMAND_END,   &ns1);
+            gpu_ctx.hw_start_kernel_ms[i] = ns_to_ms(ns0);
+            gpu_ctx.kernel_ms[i]  = ns_to_ms(ns1 - ns0);
 
             /* download (read buffer) */
-            ev_download[i].getProfilingInfo(CL_PROFILING_COMMAND_START, &ns0);
-            ev_download[i].getProfilingInfo(CL_PROFILING_COMMAND_END,   &ns1);
-            hw_start_download_ms[i] = ns_to_ms(ns0);
-            download_ms[i]= ns_to_ms(ns1 - ns0);
+            gpu_ctx.ev_download[i].getProfilingInfo(CL_PROFILING_COMMAND_START, &ns0);
+            gpu_ctx.ev_download[i].getProfilingInfo(CL_PROFILING_COMMAND_END,   &ns1);
+            gpu_ctx.hw_start_download_ms[i] = ns_to_ms(ns0);
+            gpu_ctx.download_ms[i]= ns_to_ms(ns1 - ns0);
         }
 
         /* ------------------ human-readable output ------------------- */
         // calculate relative times
-        cl_ulong t0 = overall_start_event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
+        cl_ulong t0 = gpu_ctx.overall_start_event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
         auto hw_rel = [&](double hw_start_ms){ return hw_start_ms - ns_to_ms(t0); };
 
-        for (int i = 0; i < batch_repeats; ++i) {
-            std::cout << "Start_upload_" << i << ": " << hw_rel(hw_start_upload_ms[i]) << std::endl;
-            std::cout << "Start_kernel_" << i << ": " << hw_rel(hw_start_kernel_ms[i]) << std::endl;
-            std::cout << "Start_download_" << i << ": " << hw_rel(hw_start_download_ms[i]) << std::endl;
+        for (int i = 0; i < params.batch_repeats; ++i) {
+            std::cout << "Start_upload_" << i << ": " << hw_rel(gpu_ctx.hw_start_upload_ms[i]) << std::endl;
+            std::cout << "Start_kernel_" << i << ": " << hw_rel(gpu_ctx.hw_start_kernel_ms[i]) << std::endl;
+            std::cout << "Start_download_" << i << ": " << hw_rel(gpu_ctx.hw_start_download_ms[i]) << std::endl;
 
-            std::cout << "Upload_time_" << i << ": " << upload_ms[i] << std::endl;
-            std::cout << "Kernel_time_" << i << ": " << kernel_ms[i] << std::endl;
-            std::cout << "Download_time_" << i << ": " << download_ms[i] << std::endl;
+            std::cout << "Upload_time_" << i << ": " << gpu_ctx.upload_ms[i] << std::endl;
+            std::cout << "Kernel_time_" << i << ": " << gpu_ctx.kernel_ms[i] << std::endl;
+            std::cout << "Download_time_" << i << ": " << gpu_ctx.download_ms[i] << std::endl;
         }
     }
 
-    if(pinned_memory){
+    if(params.pinned_memory){
         // Cleanup: Unmap pinned buffers
-        for (int i = 0; i < batch_repeats; ++i)
-            queue.enqueueUnmapMemObject(pinned_input_host_buffers[i], 
-                mapped_pinned_input_pointers[i], nullptr, nullptr);
-        for (int i = 0; i < out_buffer_count; ++i)
-            queue.enqueueUnmapMemObject(pinned_output_host_buffers[i], 
-                mapped_pinned_output_pointers[i], nullptr, nullptr);
-        queue.finish(); // Ensure unmaps complete
+        for (int i = 0; i < params.batch_repeats; ++i)
+            gpu_ctx.queue.enqueueUnmapMemObject(gpu_ctx.pinned_input_host_buffers[i], 
+                gpu_ctx.mapped_pinned_input_pointers[i], nullptr, nullptr);
+        for (int i = 0; i < gpu_ctx.out_buffer_count; ++i)
+            gpu_ctx.queue.enqueueUnmapMemObject(gpu_ctx.pinned_output_host_buffers[i], 
+                gpu_ctx.mapped_pinned_output_pointers[i], nullptr, nullptr);
+        gpu_ctx.queue.finish(); // Ensure unmaps complete
     }
 }
 

@@ -1,5 +1,12 @@
 {
     "C_Cpp.default.compilerPath": "D:\\User Applications\\Softwares\\LLVM-mingw\\bin\\clang++.exe",
+    "C_Cpp.default.includePath": [
+        "${workspaceFolder}/include",
+        "${workspaceFolder}/src",
+        "${env:CUDA_PATH}/include"
+    ],
+    "C_Cpp.default.cppStandard": "c++17",
+    "C_Cpp.default.intelliSenseMode": "windows-clang-x64",
     "files.associations": {
         "vector": "cpp",
         "__nullptr": "cpp",

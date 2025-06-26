@@ -1,18 +1,27 @@
 {
-  "configurations": [
-    {
-      "name": "gpu code config",
-      "compilerPath": "D:/User Applications/Softwares/LLVM-mingw/bin/clang++.exe",
-      "intelliSenseMode": "windows-clang-x64",
-      "includePath": [
-        "${workspaceFolder}",
-        "${workspaceFolder}/include",
-        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v11.8/include"
-      ],
-      "defines": ["_WIN64"],
-      "cStandard": "c17",
-      "cppStandard": "c++17"
-    }
-  ],
-  "version": 4
+    "configurations": [
+        {
+            "name": "Win32",
+            "includePath": [
+                "${workspaceFolder}/include",
+                "${workspaceFolder}/src",
+                "${env:CUDA_PATH}/include",
+                "${workspaceFolder}/**"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE",
+                "CL_HPP_ENABLE_EXCEPTIONS",
+                "CL_HPP_TARGET_OPENCL_VERSION=300",
+                "STB_IMAGE_IMPLEMENTATION",
+                "STB_IMAGE_WRITE_IMPLEMENTATION"
+            ],
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "windows-clang-x64",
+            "compilerPath": "D:/User Applications/Softwares/LLVM-mingw/bin/clang++.exe"
+        }
+    ],
+    "version": 4
 }

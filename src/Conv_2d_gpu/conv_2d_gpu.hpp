@@ -12,37 +12,64 @@
 #include <windows.h>
 #include <cl2.hpp>
 
-inline cl::Context makeContextAndQueue(cl::CommandQueue* outQueue, cl::Device* outDevice) {
+std::vector<int> get_nvidia_gpu_indices() {
+    std::vector<int> nvidia_gpu_indices;
+    
+    try {
+        std::vector<cl::Platform> platforms;
+        cl::Platform::get(&platforms);
+        
+        int gpu_index = 0;
+        for (const auto& platform : platforms) {
+            std::vector<cl::Device> devices;
+            platform.getDevices(CL_DEVICE_TYPE_GPU, &devices);
+            
+            std::string platform_name = platform.getInfo<CL_PLATFORM_NAME>();
+            if (platform_name.find("NVIDIA") != std::string::npos) {
+                for (size_t i = 0; i < devices.size(); ++i) {
+                    nvidia_gpu_indices.push_back(gpu_index + i);
+                }
+            }
+            gpu_index += devices.size();
+        }
+    } catch (const cl::Error& e) {
+        std::cerr << "OpenCL Error while detecting GPUs: " << e.what() << std::endl;
+    }
+    
+    return nvidia_gpu_indices;
+}
+
+inline cl::Context makeContextAndQueue(cl::CommandQueue* outQueue, cl::Device* outDevice, int gpu_idx) {
     std::vector<cl::Platform> platforms;
     cl::Platform::get(&platforms);
     if (platforms.empty())
         throw std::runtime_error("No OpenCL platforms found");
 
-    cl::Device device;
-    char dev_name[128];
-    for (const auto& plat : platforms)
-    {
-        std::vector<cl::Device> devices;
-        plat.getDevices(CL_DEVICE_TYPE_GPU, &devices);
-        plat.getInfo(CL_PLATFORM_NAME, &dev_name);
-        if (!devices.empty() && std::string(dev_name).find("NVIDIA") != std::string::npos) {
-            device = devices[0];
-            break;
+    // Find NVIDIA platform and get the device directly at gpu_idx
+    for (const auto& plat : platforms) {
+        std::string platform_name = plat.getInfo<CL_PLATFORM_NAME>();
+        if (platform_name.find("NVIDIA") != std::string::npos) {
+            std::vector<cl::Device> devices;
+            plat.getDevices(CL_DEVICE_TYPE_GPU, &devices);
+            
+            if (gpu_idx >= 0 && gpu_idx < static_cast<int>(devices.size())) {
+                cl::Device device = devices[gpu_idx];
+                std::cout << "Using GPU index " << gpu_idx << " - device: " << device.getInfo<CL_DEVICE_NAME>() << std::endl;
+
+                cl::Context context({device});
+                cl::CommandQueue queue(context, device, CL_QUEUE_PROFILING_ENABLE);
+
+                if (outQueue)  *outQueue  = queue;
+                if (outDevice) *outDevice = device;
+
+                return context;
+            } else {
+                throw std::runtime_error("GPU index " + std::to_string(gpu_idx) + " out of range. Available NVIDIA GPUs: " + std::to_string(devices.size()));
+            }
         }
     }
-    if (!device())
-        throw std::runtime_error("No GPU devices found");
     
-    std::cout << "Using device: " << device.getInfo<CL_DEVICE_NAME>() << std::endl;
-
-    cl::Context context({device});
-    // Enable profiling for the command queue
-    cl::CommandQueue queue(context, device, CL_QUEUE_PROFILING_ENABLE);
-
-    if (outQueue)  *outQueue  = queue;
-    if (outDevice) *outDevice = device;
-
-    return context;
+    throw std::runtime_error("No NVIDIA platform found");
 }
 
 std::string loadKernelSource() {
@@ -94,7 +121,7 @@ void initializeGPU(
     int filter_width, int filter_height, int filter_channels,
     int output_width, int output_height
 ) {
-    context = makeContextAndQueue(gpu_idxو &queue, &device);
+    context = makeContextAndQueue(&queue, &device, gpu_idx);
     const std::string kernel_source_code = loadKernelSource();
     program = cl::Program(context, kernel_source_code);
     program.build({device});
