@@ -12,6 +12,8 @@
 #include <chrono>
 #include <direct.h>
 #include <cstring>
+#include <thread>
+#include <future>
 
 /* ---- project headers ---- */
 #include "utilities.hpp"
@@ -86,6 +88,11 @@ struct ConvParams {
     size_t in_bytes;
     size_t out_bytes;
     
+    // GPU-specific batch distribution
+    int batch_start;
+    int batch_end;
+    int gpu_batch_count;
+    
     ConvParams(char* argv[], 
                std::vector<unsigned char>& input_batch, int& input_width, int& input_height, int& channel_count,
                std::vector<float>& filter, int& filter_width, int& filter_height, int& filter_channels, int& stride,
@@ -102,6 +109,34 @@ struct ConvParams {
         b_size = std::stoi(argv[7]);
         in_bytes = sizeof(unsigned char) * input_batch.size();
         out_bytes = sizeof(unsigned char) * output.size();
+        
+        // Initialize batch distribution (will be set per GPU)
+        batch_start = 0;
+        batch_end = batch_repeats;
+        gpu_batch_count = batch_repeats;
+    }
+    
+    // Copy constructor for GPU-specific params with different output buffer
+    ConvParams(const ConvParams& other, std::vector<unsigned char>& new_output)
+        : argv(other.argv), input_batch(other.input_batch), 
+          input_width(other.input_width), input_height(other.input_height), 
+          channel_count(other.channel_count), filter(other.filter),
+          filter_width(other.filter_width), filter_height(other.filter_height),
+          filter_channels(other.filter_channels), stride(other.stride),
+          output(new_output), output_width(other.output_width), output_height(other.output_height),
+          batch_repeats(other.batch_repeats), b_size(other.b_size),
+          detailed_timings(other.detailed_timings), pinned_memory(other.pinned_memory),
+          full_duplex(other.full_duplex), in_bytes(other.in_bytes),
+          batch_start(other.batch_start), batch_end(other.batch_end),
+          gpu_batch_count(other.gpu_batch_count) {
+        out_bytes = sizeof(unsigned char) * new_output.size();
+    }
+    
+    // Set batch range for a specific GPU
+    void setBatchRange(int start, int end) {
+        batch_start = start;
+        batch_end = end;
+        gpu_batch_count = end - start;
     }
 };
 
@@ -118,9 +153,37 @@ void run(char* argv[],
     }
     
     // Create shared parameters
-    ConvParams params(argv, input_batch, input_width, input_height, channel_count,
-                     filter, filter_width, filter_height, filter_channels, stride,
-                     output, output_width, output_height);
+    ConvParams base_params(argv, input_batch, input_width, input_height, channel_count,
+                          filter, filter_width, filter_height, filter_channels, stride,
+                          output, output_width, output_height);
+    
+    int total_batches = base_params.batch_repeats;
+    int num_gpus = nvidia_gpu_indices.size();
+    
+    std::cout << "Distributing " << total_batches << " batches across " << num_gpus << " GPUs" << std::endl;
+    
+    // Calculate batch distribution across GPUs
+    std::vector<ConvParams> gpu_params;
+    std::vector<std::vector<unsigned char>> gpu_outputs(num_gpus);
+    
+    for (size_t i = 0; i < nvidia_gpu_indices.size(); ++i) {
+        // Calculate batch range for this GPU
+        int batch_start = (total_batches * i) / num_gpus;
+        int batch_end = (total_batches * (i + 1)) / num_gpus;
+        int gpu_batch_count = batch_end - batch_start;
+        
+        std::cout << "GPU " << nvidia_gpu_indices[i] << " will handle batches " 
+                  << batch_start << " to " << (batch_end - 1) << " (" << gpu_batch_count << " batches)" << std::endl;
+        
+        // Create separate output buffer for this GPU
+        // Each GPU's output size is proportional to its batch count
+        size_t single_batch_output_size = output.size() / total_batches;
+        gpu_outputs[i].resize(single_batch_output_size * gpu_batch_count);
+        
+        // Create a copy of params for this GPU with its own output buffer
+        gpu_params.emplace_back(base_params, gpu_outputs[i]);
+        gpu_params[i].setBatchRange(batch_start, batch_end);
+    }
     
     // Create GPU contexts for each GPU
     std::vector<GPUContext> gpu_contexts(nvidia_gpu_indices.size());
@@ -128,20 +191,65 @@ void run(char* argv[],
     // Do initial setup for each GPU
     for (size_t i = 0; i < nvidia_gpu_indices.size(); ++i) {
         std::cout << "Setting up GPU " << nvidia_gpu_indices[i] << std::endl;
-        initial_setup(gpu_contexts[i], params, nvidia_gpu_indices[i]);
+        initial_setup(gpu_contexts[i], gpu_params[i], nvidia_gpu_indices[i]);
     }
     
-    // Do main loop for each GPU
+    // Run all GPUs in parallel using futures
+    std::vector<std::future<void>> gpu_futures;
+    
+    std::cout << "Starting parallel execution on " << num_gpus << " GPUs..." << std::endl;
+    
     for (size_t i = 0; i < nvidia_gpu_indices.size(); ++i) {
-        std::cout << "Running main loop on GPU " << nvidia_gpu_indices[i] << std::endl;
-        main_loop(gpu_contexts[i], params);
+        gpu_futures.push_back(std::async(std::launch::async, [&, i]() {
+            std::cout << "GPU " << nvidia_gpu_indices[i] << " starting main loop..." << std::endl;
+            main_loop(gpu_contexts[i], gpu_params[i]);
+            std::cout << "GPU " << nvidia_gpu_indices[i] << " completed main loop" << std::endl;
+        }));
     }
     
-    // Wrap up for each GPU
+    // Wait for all GPUs to complete
+    for (auto& future : gpu_futures) {
+        future.wait();
+    }
+    
+    std::cout << "All GPUs completed processing" << std::endl;
+    
+    // Wrap up for each GPU (collect timing data)
     for (size_t i = 0; i < nvidia_gpu_indices.size(); ++i) {
         std::cout << "Wrapping up GPU " << nvidia_gpu_indices[i] << std::endl;
-        wrap_up(gpu_contexts[i], params);
+        wrap_up(gpu_contexts[i], gpu_params[i]);
     }
+    
+    // Collect and merge results from all GPUs
+    std::cout << "Collecting results from all GPUs..." << std::endl;
+    
+    // Calculate output dimensions per batch
+    size_t single_batch_output_size = output.size() / total_batches;
+    
+    // Merge results from all GPUs back into the main output buffer
+    for (size_t gpu_idx = 0; gpu_idx < nvidia_gpu_indices.size(); ++gpu_idx) {
+        int batch_start = gpu_params[gpu_idx].batch_start;
+        int batch_count = gpu_params[gpu_idx].gpu_batch_count;
+        
+        std::cout << "Merging " << batch_count << " batches from GPU " << nvidia_gpu_indices[gpu_idx] 
+                  << " (batches " << batch_start << " to " << (batch_start + batch_count - 1) << ")" << std::endl;
+        
+        // Copy each batch from GPU output to the correct position in main output
+        for (int batch_idx = 0; batch_idx < batch_count; ++batch_idx) {
+            size_t global_batch_idx = batch_start + batch_idx;
+            size_t src_offset = batch_idx * single_batch_output_size;
+            size_t dst_offset = global_batch_idx * single_batch_output_size;
+            
+            // Copy this batch's data from GPU output to main output
+            std::copy(gpu_outputs[gpu_idx].begin() + src_offset,
+                     gpu_outputs[gpu_idx].begin() + src_offset + single_batch_output_size,
+                     output.begin() + dst_offset);
+        }
+    }
+    
+    std::cout << "Successfully merged results from " << num_gpus << " GPUs" << std::endl;
+    std::cout << "Total output size: " << output.size() << " bytes" << std::endl;
+    std::cout << "Workload distribution summary:" << std::endl;
 }
 
 void initial_setup(GPUContext& gpu_ctx, const ConvParams& params, int gpu_idx) {
@@ -189,36 +297,36 @@ void initial_setup(GPUContext& gpu_ctx, const ConvParams& params, int gpu_idx) {
     gpu_ctx.kernel.setArg(2, gpu_ctx.d_filter);
     
     /* ------------------ batch buffers & events ------------------ */
-    gpu_ctx.d_input.resize(params.batch_repeats);
-    gpu_ctx.d_output.resize(params.batch_repeats);
+    gpu_ctx.d_input.resize(params.gpu_batch_count);
+    gpu_ctx.d_output.resize(params.gpu_batch_count);
 
-    gpu_ctx.ev_upload.resize(params.batch_repeats);
-    gpu_ctx.ev_kernel.resize(params.batch_repeats);
-    gpu_ctx.ev_download.resize(params.batch_repeats);
+    gpu_ctx.ev_upload.resize(params.gpu_batch_count);
+    gpu_ctx.ev_kernel.resize(params.gpu_batch_count);
+    gpu_ctx.ev_download.resize(params.gpu_batch_count);
 
     if(params.detailed_timings) {
-        gpu_ctx.hw_start_upload_ms.resize(params.batch_repeats);
-        gpu_ctx.hw_start_kernel_ms.resize(params.batch_repeats);
-        gpu_ctx.hw_start_download_ms.resize(params.batch_repeats);
-        gpu_ctx.upload_ms.resize(params.batch_repeats);
-        gpu_ctx.kernel_ms.resize(params.batch_repeats);
-        gpu_ctx.download_ms.resize(params.batch_repeats);
+        gpu_ctx.hw_start_upload_ms.resize(params.gpu_batch_count);
+        gpu_ctx.hw_start_kernel_ms.resize(params.gpu_batch_count);
+        gpu_ctx.hw_start_download_ms.resize(params.gpu_batch_count);
+        gpu_ctx.upload_ms.resize(params.gpu_batch_count);
+        gpu_ctx.kernel_ms.resize(params.gpu_batch_count);
+        gpu_ctx.download_ms.resize(params.gpu_batch_count);
     }
 
     if(params.pinned_memory)
         gpu_ctx.out_buffer_count = 2;
     else
-        gpu_ctx.out_buffer_count = params.batch_repeats;
+        gpu_ctx.out_buffer_count = params.gpu_batch_count;
 
-    gpu_ctx.mapped_pinned_input_pointers.resize(params.batch_repeats);
+    gpu_ctx.mapped_pinned_input_pointers.resize(params.gpu_batch_count);
     gpu_ctx.mapped_pinned_output_pointers.resize(gpu_ctx.out_buffer_count);
 
     if(params.pinned_memory) {
         /* ------------------ pinned memory buffers ------------------ */
-        gpu_ctx.pinned_input_host_buffers.resize(params.batch_repeats);
+        gpu_ctx.pinned_input_host_buffers.resize(params.gpu_batch_count);
         gpu_ctx.pinned_output_host_buffers.resize(gpu_ctx.out_buffer_count);
         // simulate as if pinned memory was used when loading input data
-        for (int i = 0; i < params.batch_repeats; ++i) {
+        for (int i = 0; i < params.gpu_batch_count; ++i) {
             gpu_ctx.pinned_input_host_buffers[i] = cl::Buffer(gpu_ctx.context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_HOST_WRITE_ONLY, params.in_bytes);
             gpu_ctx.mapped_pinned_input_pointers[i] = (unsigned char*)gpu_ctx.queue.enqueueMapBuffer(
                 gpu_ctx.pinned_input_host_buffers[i], CL_TRUE, CL_MAP_WRITE_INVALIDATE_REGION, 0, params.in_bytes);
@@ -226,7 +334,7 @@ void initial_setup(GPUContext& gpu_ctx, const ConvParams& params, int gpu_idx) {
             std::copy(params.input_batch.data(), params.input_batch.data() + params.input_batch.size(), gpu_ctx.mapped_pinned_input_pointers[i]);
         }
     } else {
-        for (int i = 0; i < params.batch_repeats; ++i)
+        for (int i = 0; i < params.gpu_batch_count; ++i)
             gpu_ctx.mapped_pinned_input_pointers[i] = const_cast<unsigned char*>(params.input_batch.data());
         for (int i = 0; i < gpu_ctx.out_buffer_count; ++i)
             gpu_ctx.mapped_pinned_output_pointers[i] = params.output.data();
@@ -266,8 +374,8 @@ void main_loop(GPUContext& gpu_ctx, const ConvParams& params) {
                                    nullptr, &gpu_ctx.ev_upload[0]);
 
     // main loop - (user's new order: kernel, download, upload)
-    for (int i = 0; i <= params.batch_repeats; ++i) {
-        if (i < params.batch_repeats) {
+    for (int i = 0; i <= params.gpu_batch_count; ++i) {
+        if (i < params.gpu_batch_count) {
             // run kernel on current input
             gpu_ctx.d_output[i]= cl::Buffer(gpu_ctx.context, CL_MEM_READ_WRITE, params.out_bytes);
             gpu_ctx.kernel.setArg(0, gpu_ctx.d_input[i]);
@@ -303,7 +411,7 @@ void main_loop(GPUContext& gpu_ctx, const ConvParams& params) {
         }
 
         // upload the next input
-        if (i+1 < params.batch_repeats) {
+        if (i+1 < params.gpu_batch_count) {
             gpu_ctx.d_input[i+1] = cl::Buffer(gpu_ctx.context, CL_MEM_READ_ONLY,  params.in_bytes);
             gpu_ctx.upload_queue.enqueueWriteBuffer(gpu_ctx.d_input[i+1], CL_FALSE, 0, params.in_bytes,
                                             gpu_ctx.mapped_pinned_input_pointers[i+1],
@@ -332,7 +440,7 @@ void wrap_up(GPUContext& gpu_ctx, const ConvParams& params) {
 
 
     if(params.detailed_timings) {
-        for (int i = 0; i < params.batch_repeats; ++i) {
+        for (int i = 0; i < params.gpu_batch_count; ++i) {
             cl_ulong ns0, ns1;
 
             /* upload (write buffer) */
@@ -359,20 +467,20 @@ void wrap_up(GPUContext& gpu_ctx, const ConvParams& params) {
         cl_ulong t0 = gpu_ctx.overall_start_event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
         auto hw_rel = [&](double hw_start_ms){ return hw_start_ms - ns_to_ms(t0); };
 
-        for (int i = 0; i < params.batch_repeats; ++i) {
-            std::cout << "Start_upload_" << i << ": " << hw_rel(gpu_ctx.hw_start_upload_ms[i]) << std::endl;
-            std::cout << "Start_kernel_" << i << ": " << hw_rel(gpu_ctx.hw_start_kernel_ms[i]) << std::endl;
-            std::cout << "Start_download_" << i << ": " << hw_rel(gpu_ctx.hw_start_download_ms[i]) << std::endl;
+        for (int i = 0; i < params.gpu_batch_count; ++i) {
+            std::cout << "Start_upload_" << (params.batch_start + i) << ": " << hw_rel(gpu_ctx.hw_start_upload_ms[i]) << std::endl;
+            std::cout << "Start_kernel_" << (params.batch_start + i) << ": " << hw_rel(gpu_ctx.hw_start_kernel_ms[i]) << std::endl;
+            std::cout << "Start_download_" << (params.batch_start + i) << ": " << hw_rel(gpu_ctx.hw_start_download_ms[i]) << std::endl;
 
-            std::cout << "Upload_time_" << i << ": " << gpu_ctx.upload_ms[i] << std::endl;
-            std::cout << "Kernel_time_" << i << ": " << gpu_ctx.kernel_ms[i] << std::endl;
-            std::cout << "Download_time_" << i << ": " << gpu_ctx.download_ms[i] << std::endl;
+            std::cout << "Upload_time_" << (params.batch_start + i) << ": " << gpu_ctx.upload_ms[i] << std::endl;
+            std::cout << "Kernel_time_" << (params.batch_start + i) << ": " << gpu_ctx.kernel_ms[i] << std::endl;
+            std::cout << "Download_time_" << (params.batch_start + i) << ": " << gpu_ctx.download_ms[i] << std::endl;
         }
     }
 
     if(params.pinned_memory){
         // Cleanup: Unmap pinned buffers
-        for (int i = 0; i < params.batch_repeats; ++i)
+        for (int i = 0; i < params.gpu_batch_count; ++i)
             gpu_ctx.queue.enqueueUnmapMemObject(gpu_ctx.pinned_input_host_buffers[i], 
                 gpu_ctx.mapped_pinned_input_pointers[i], nullptr, nullptr);
         for (int i = 0; i < gpu_ctx.out_buffer_count; ++i)
