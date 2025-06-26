@@ -63,11 +63,14 @@ def clean_parsed(output_lines):
     return cleaned_data
 
 
-def generate_data(samples, single_batch_size,
-                  batch_counts, gpu_local_mem, cpu_threads,
-                  stride=2,
-                  kernel_arg="kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt",
-                  input_arg="input_lena.png", ):
+def generate_data(
+        cpu_or_gpu, cpu_threads,
+        samples, single_batch_size, batch_counts,
+
+        kernel_arg="kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt",
+        input_arg="input_lena.png", stride=2,
+        gpu_detailed_timing=None, gpu_local_mem=None, gpu_pinned_mem=None,
+    ):
     args = [
         input_arg,  # input image
         kernel_arg,  # kernel files
@@ -78,38 +81,64 @@ def generate_data(samples, single_batch_size,
         f"{single_batch_size}"  # simulated single batch size
     ]
 
-    parsed_data = {'cpu_overall_time': []}
+    print(f'{cpu_or_gpu=}')
+    assert cpu_or_gpu in ['cpu','gpu','both']
+
+    parsed_data = {}
     for i in range(samples):
         print(f"Sample {i + 1} of {samples}")
-        args[2] = gpu_local_mem
-        output_lines_gpu = run_and_parse_conv(args, exe_filename="conv_2d_gpu.exe")
-        temp = clean_parsed(output_lines_gpu)
+        if cpu_or_gpu in ['gpu', 'both']:
+            assert gpu_detailed_timing in [False,True]
+            gpu_detailed_timing=str(gpu_detailed_timing).lower()
+            assert gpu_local_mem in [False,True]
+            gpu_local_mem=str(gpu_local_mem).lower()
+            assert gpu_pinned_mem in [False,True]
+            gpu_pinned_mem=str(gpu_pinned_mem).lower()
 
-        for key, value in temp.items():
-            if parsed_data.get(key) is None:
-                parsed_data[key] = []
-            parsed_data[key].append(value)
+            args[2] = gpu_local_mem
+            output_lines_gpu = run_and_parse_conv(args, exe_filename="conv_2d_gpu.exe")
+            temp = clean_parsed(output_lines_gpu)
+
+            for key, value in temp.items():
+                if parsed_data.get(key) is None:
+                    parsed_data[key] = []
+                parsed_data[key].append(value)
 
         # run the CPU version
-        args[2] = str(cpu_threads)
-        # get_cpu_time = run_and_parse_conv(args, exe_filename="conv_2d_sequential.exe")
-        # parsed_data['cpu_overall_time'] += [clean_parsed(get_cpu_time)['overall_time']]
+        if cpu_or_gpu in ['cpu', 'both']:
+            if 'cpu_overall_time' not in parsed_data.keys():
+                parsed_data['cpu_overall_time']=[]
+            args[2] = str(cpu_threads)
+            get_cpu_time = run_and_parse_conv(args, exe_filename="conv_2d_sequential.exe")
+            parsed_data['cpu_overall_time'] += [clean_parsed(get_cpu_time)['overall_time']]
 
-    # save the parsed data to a file
-    with open("../data/out/parsed_data.txt", "w") as f:
-        f.write("{")
-        for key, value in parsed_data.items():
-            f.write("'" + key + f"': {value},\n")
-        f.write("}\n")
+    return parsed_data
 
 
 if __name__ == "__main__":
     kernel_x_y_fc = (5, 5, 5) # x y <channels> fc
     input_x_y_c = (1000,1000,3)
-    generate_data(samples=10, single_batch_size=12, batch_counts=15,
-                  gpu_local_mem='true', cpu_threads=0,
-                  stride=2,
-                  kernel_arg="%d,%d,%d" % kernel_x_y_fc,
-                  input_arg="%d,%d,%d" % input_x_y_c,)
-                  # kernel_arg="kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt",
-                  # input_arg="input_lena.png")
+    parsed_data = generate_data(
+        stride=2,
+        kernel_arg="%d,%d,%d" % kernel_x_y_fc,
+        input_arg="%d,%d,%d" % input_x_y_c,
+        # kernel_arg="kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt",
+        # input_arg="input_lena.png",
+
+        samples=2, single_batch_size=12, batch_counts=15,
+        cpu_or_gpu='gpu', cpu_threads=0,
+        detailed_timing=True, gpu_local_mem=True, pinned_mem=True)
+
+    # save the parsed data to a file
+    # data = 'cpu_only'; parsed_data['cpu_overall_time']
+    # data = 'pinned_only'
+    # data = 'duplex_only'
+    # data = 'no_opt'
+    data = 'pinned_and_duplex'
+
+    print('saved to', data)
+    with open(f"../data/out/{data}.txt", "w") as f:
+        f.write("{")
+        for key, value in parsed_data.items():
+            f.write("'" + key + f"': {value},\n")
+        f.write("}\n")

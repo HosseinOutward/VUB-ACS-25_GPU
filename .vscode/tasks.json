@@ -2,7 +2,7 @@
     "version": "2.0.0",
     "options": {
         "env": {
-            "CUDA_PATH": "D:/User/Software/Nvidia/CUDA/1211"
+            "CUDA_PATH": "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v11.8"
         }
     },
     "tasks": [
@@ -32,7 +32,7 @@
         {
             "type": "cppbuild",
             "label": "C/C++: clang++.exe build active file",
-            "command": "D:/User/Software/Cpp_files/mingw-llvm/bin/clang++.exe",
+            "command": "D:/User Applications/Softwares/LLVM-mingw/bin/clang++.exe",
             "args": [
                 "-fcolor-diagnostics",
                 "-fansi-escape-codes",
@@ -50,7 +50,7 @@
                 "${workspaceFolder}/bin/${fileBasenameNoExtension}.exe"
             ],
             "options": {
-                "cwd": "D:/User/Software/Cpp_files/mingw-llvm/bin"
+                "cwd": "D:/User Applications/Softwares/LLVM-mingw/bin"
             },
             "problemMatcher": [
                 "$gcc"

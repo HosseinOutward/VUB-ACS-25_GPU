@@ -1,5 +1,5 @@
 {
-    "C_Cpp.default.compilerPath": "d:\\User Applications\\Softwares\\CLang-LLVM\\bin\\clang++.exe",
+    "C_Cpp.default.compilerPath": "D:\\User Applications\\Softwares\\LLVM-mingw\\bin\\clang++.exe",
     "files.associations": {
         "vector": "cpp",
         "__nullptr": "cpp",
@@ -56,6 +56,8 @@
         "filesystem": "cpp",
         "iterator": "cpp",
         "stack": "cpp",
-        "utility": "cpp"
+        "utility": "cpp",
+        "charconv": "cpp",
+        "ratio": "cpp"
     }
 }

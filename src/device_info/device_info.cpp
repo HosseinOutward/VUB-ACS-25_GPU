@@ -105,4 +105,39 @@ int main() {
     std::cout << "Usable WG size with all caps applied: " << WG_size_cap    << '\n';
     std::cout << "Resident WGs per CU (local-mem-only): " << WG_perCU       << '\n';
     std::cout << "Theoretical max WGs on device:        " << WG_device      << '\n';
+
+
+    // core count and speed information
+    cl_uint platformCount = 0;
+    clGetPlatformIDs(0, nullptr, &platformCount);
+    std::vector<cl_platform_id> platforms(platformCount);
+    clGetPlatformIDs(platformCount, platforms.data(), nullptr);
+
+    cl_device_id device = nullptr;
+    for (auto p : platforms) {
+        cl_uint deviceCount = 0;
+        if (clGetDeviceIDs(p, CL_DEVICE_TYPE_GPU, 0, nullptr, &deviceCount) == CL_SUCCESS && deviceCount > 0) {
+            clGetDeviceIDs(p, CL_DEVICE_TYPE_GPU, 1, &device, nullptr);
+            break;
+        }
+    }
+    if (!device) {
+        std::cerr << "No GPU device found\n";
+        return 1;
+    }
+
+    // Example for a Pascal GPU with 128 cores per SM:
+    unsigned int estimatedCores = computeUnits * 128;
+
+    std::cout << "Compute units: " << computeUnits << "\n";
+    std::cout << "Estimated total cores: " << estimatedCores << "\n";
+
+    size_t maxFreq;
+    clGetDeviceInfo(dev, CL_DEVICE_MAX_CLOCK_FREQUENCY, sizeof(maxFreq), &maxFreq, nullptr);
+    std::cout << "Max clock frequency: " << maxFreq << " MHz\n";
+
+    std::cout << "Estimated max speed: "
+        << (static_cast<double>(maxFreq) * estimatedCores * 2.0 / 1e6)
+        << " TFlops\n";
+
 }
