@@ -83,6 +83,7 @@ std::string loadKernelSource() {
 
 // Helper function for GPU initialization
 void initializeGPU(
+    int gpu_idx,
     cl::Context& context, 
     cl::CommandQueue& queue, 
     cl::Device& device, 
@@ -93,7 +94,7 @@ void initializeGPU(
     int filter_width, int filter_height, int filter_channels,
     int output_width, int output_height
 ) {
-    context = makeContextAndQueue(&queue, &device);
+    context = makeContextAndQueue(gpu_idxو &queue, &device);
     const std::string kernel_source_code = loadKernelSource();
     program = cl::Program(context, kernel_source_code);
     program.build({device});

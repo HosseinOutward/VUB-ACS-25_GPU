@@ -1,10 +1,6 @@
 #define CL_HPP_ENABLE_EXCEPTIONS
 #define CL_HPP_TARGET_OPENCL_VERSION 300
 
-#define DETAILED_TIMINGS
-#define PINNED_MEMORY
-#define FULL_DUPLEX
-
 #include <cl2.hpp>
 
 #include <vector>
@@ -29,6 +25,28 @@ void run(char* argv[],
         std::vector<float>& filter, int& filter_width, int& filter_height, int& filter_channels, int& stride,
         std::vector<unsigned char>& output, int& output_width, int& output_height)
 {
+    int nv_gpu_idx_vec = get_nv_gpu_idx_vec();
+    if (nv_gpu_idx_vec.empty()) {
+        std::cerr << "No NVIDIA GPU found. Exiting." << std::endl;
+        return;
+    }
+    
+    // do initial setup for each GPU
+        // initate variables needed for the next steps
+        // loop over gpus and run initial_setup
+
+    // do main loop for each GPU
+        // loop for each gpu and give the args
+
+    // wrap up for each GPU
+        // similar to above
+}
+
+void initial_setup() {
+    bool detailed_timings = (std::strcmp(argv[8], "true") == 0);
+    bool pinned_memory    = (std::strcmp(argv[9], "true") == 0);
+    bool full_duplex      = (std::strcmp(argv[10], "true") == 0);
+
     /*------------------ gpu init ------------------*/
     cl::Context context;
     cl::CommandQueue queue;
@@ -37,7 +55,7 @@ void run(char* argv[],
     cl::Kernel kernel;
     
     /* IMPORTANT PART - Create separate queues for maximum parallelism */
-    initializeGPU(context, queue, device, program, kernel, (strcmp(argv[3], "true") == 0),
+    initializeGPU(gpu_idx, context, queue, device, program, kernel, (strcmp(argv[3], "true") == 0),
         stride, input_width, input_height, channel_count, 
         filter_width, filter_height, filter_channels, output_width, output_height);
     
@@ -90,45 +108,51 @@ void run(char* argv[],
     std::vector<cl::Event> ev_kernel(batch_repeats);
     std::vector<cl::Event> ev_download(batch_repeats);
 
-#ifdef DETAILED_TIMINGS
-    std::vector<double> hw_start_upload_ms(batch_repeats);
-    std::vector<double> hw_start_kernel_ms(batch_repeats);
-    std::vector<double> hw_start_download_ms(batch_repeats);
+    std::vector<double> hw_start_upload_ms, hw_start_kernel_ms, 
+        hw_start_download_ms, upload_ms, kernel_ms, download_ms;
+    if(detailed_timings) {
+        std::vector<double> hw_start_upload_ms(batch_repeats);
+        std::vector<double> hw_start_kernel_ms(batch_repeats);
+        std::vector<double> hw_start_download_ms(batch_repeats);
 
-    std::vector<double> upload_ms(batch_repeats);
-    std::vector<double> kernel_ms(batch_repeats);
-    std::vector<double> download_ms(batch_repeats);
-#endif
-
-int out_buffer_count;
-#ifdef PINNED_MEMORY
-    out_buffer_count = 2;
-#else
-    out_buffer_count = batch_repeats;
-#endif
-
-std::vector<unsigned char*> mapped_pinned_input_pointers(batch_repeats);
-std::vector<unsigned char*> mapped_pinned_output_pointers(out_buffer_count);
-
-#ifdef PINNED_MEMORY
-    /* ------------------ pinned memory buffers ------------------ */
-    std::vector<cl::Buffer> pinned_input_host_buffers(batch_repeats);
-    std::vector<cl::Buffer> pinned_output_host_buffers(out_buffer_count);
-    // simulate as if pinned memory was used when loading input data
-    for (int i = 0; i < batch_repeats; ++i) {
-        pinned_input_host_buffers[i] = cl::Buffer(context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_HOST_WRITE_ONLY, in_bytes);
-        mapped_pinned_input_pointers[i] = (unsigned char*)queue.enqueueMapBuffer(
-            pinned_input_host_buffers[i], CL_TRUE, CL_MAP_WRITE_INVALIDATE_REGION, 0, in_bytes);
-
-        std::copy(input_batch.data(), input_batch.data() + input_batch.size(), mapped_pinned_input_pointers[i]);
+        std::vector<double> upload_ms(batch_repeats);
+        std::vector<double> kernel_ms(batch_repeats);
+        std::vector<double> download_ms(batch_repeats);
     }
-#else
-    for (int i = 0; i < batch_repeats; ++i)
-        mapped_pinned_input_pointers[i] = input_batch.data();
-    for (int i = 0; i < out_buffer_count; ++i)
-        mapped_pinned_output_pointers[i] = output.data();
-#endif
 
+    int out_buffer_count;
+    if(pinned_memory)
+        out_buffer_count = 2;
+    else
+        out_buffer_count = batch_repeats;
+
+    std::vector<unsigned char*> mapped_pinned_input_pointers(batch_repeats);
+    std::vector<unsigned char*> mapped_pinned_output_pointers(out_buffer_count);
+
+    
+    std::vector<cl::Buffer> pinned_input_host_buffers;
+    std::vector<cl::Buffer> pinned_output_host_buffers;
+    if(pinned_memory) {
+        /* ------------------ pinned memory buffers ------------------ */
+        std::vector<cl::Buffer> pinned_input_host_buffers(batch_repeats);
+        std::vector<cl::Buffer> pinned_output_host_buffers(out_buffer_count);
+        // simulate as if pinned memory was used when loading input data
+        for (int i = 0; i < batch_repeats; ++i) {
+            pinned_input_host_buffers[i] = cl::Buffer(context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_HOST_WRITE_ONLY, in_bytes);
+            mapped_pinned_input_pointers[i] = (unsigned char*)queue.enqueueMapBuffer(
+                pinned_input_host_buffers[i], CL_TRUE, CL_MAP_WRITE_INVALIDATE_REGION, 0, in_bytes);
+
+            std::copy(input_batch.data(), input_batch.data() + input_batch.size(), mapped_pinned_input_pointers[i]);
+        }
+    } else {
+        for (int i = 0; i < batch_repeats; ++i)
+            mapped_pinned_input_pointers[i] = input_batch.data();
+        for (int i = 0; i < out_buffer_count; ++i)
+            mapped_pinned_output_pointers[i] = output.data();
+    }
+}
+
+void main_loop() {
     /* ------------------ main loop: enqueue ---------------------- */
     // Get device timestamp at start
     // const auto overall_start = std::chrono::high_resolution_clock::now();
@@ -145,14 +169,15 @@ std::vector<unsigned char*> mapped_pinned_output_pointers(out_buffer_count);
         last_ev_download[i] = ue;
     }
 
-#ifdef PINNED_MEMORY
-    // double buffering for output
-    for (int i = 0; i < out_buffer_count; ++i) {
-        pinned_output_host_buffers[i] = cl::Buffer(context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_HOST_READ_ONLY, out_bytes);        mapped_pinned_output_pointers[i] = (unsigned char*)queue.enqueueMapBuffer(
-        pinned_output_host_buffers[i], CL_TRUE, CL_MAP_READ, 0, out_bytes);
+    if(pinned_memory) {
+        // double buffering for output
+        for (int i = 0; i < out_buffer_count; ++i) {
+            pinned_output_host_buffers[i] = cl::Buffer(context, CL_MEM_ALLOC_HOST_PTR | CL_MEM_HOST_READ_ONLY, out_bytes);
+            mapped_pinned_output_pointers[i] = (unsigned char*)queue.enqueueMapBuffer(
+                pinned_output_host_buffers[i], CL_TRUE, CL_MAP_READ, 0, out_bytes);
+        }
+        queue.finish();
     }
-    queue.finish();
-#endif
 
     // warmup the queues
     d_input[0] = cl::Buffer(context, CL_MEM_READ_ONLY,  in_bytes);
@@ -171,9 +196,9 @@ std::vector<unsigned char*> mapped_pinned_output_pointers(out_buffer_count);
             compute_queue.enqueueNDRangeKernel(kernel, cl::NullRange,
                                             global_dims, local_dims,
                                             &upload_deps_loop, &ev_kernel[i]);
-#ifndef FULL_DUPLEX
+
+            if(!full_duplex)
                 ev_kernel[i].wait();
-#endif
         }
         
         // Download the previous output into pinned memory and copy to host
@@ -182,20 +207,19 @@ std::vector<unsigned char*> mapped_pinned_output_pointers(out_buffer_count);
             std::vector<cl::Event> kernel_deps_loop = {
                 ev_kernel[i-1], last_ev_download[(i-1)%out_buffer_count]};
             kernel_deps_loop[1].wait(); // ensure previous download is complete
-#ifdef PINNED_MEMORY
+            if(pinned_memory) {
                 std::copy(mapped_pinned_output_pointers[(i-1)%out_buffer_count],
                         mapped_pinned_output_pointers[(i-1)%out_buffer_count] + output.size(),
                         output.data());
-#endif
+            }
             download_queue.enqueueReadBuffer(d_output[i-1], CL_FALSE, 0, out_bytes,
                                 mapped_pinned_output_pointers[(i-1)%out_buffer_count],
                                 &kernel_deps_loop, &ev_download[i-1]);
-#ifdef PINNED_MEMORY
+            if(pinned_memory)
                 last_ev_download[(i-1)%out_buffer_count] = ev_download[i-1];
-#endif
-#ifndef FULL_DUPLEX
+                
+            if(!full_duplex)
                 ev_download[i-1].wait();
-#endif
         }
 
         // upload the next input
@@ -204,12 +228,14 @@ std::vector<unsigned char*> mapped_pinned_output_pointers(out_buffer_count);
             upload_queue.enqueueWriteBuffer(d_input[i+1], CL_FALSE, 0, in_bytes,
                                             mapped_pinned_input_pointers[i+1],
                                             nullptr, &ev_upload[i+1]);
-#ifndef FULL_DUPLEX
-            ev_upload[i+1].wait();
-#endif
+            
+            if(!full_duplex)
+                ev_upload[i+1].wait();
         }
     }
+}
 
+void wrap_up() {
       /* ---------- drain all three pipelines ---------- */
     upload_queue.finish();
     compute_queue.finish();
@@ -225,55 +251,56 @@ std::vector<unsigned char*> mapped_pinned_output_pointers(out_buffer_count);
     std::cout << "Overall_time: "
               << ns_to_ms(overall_end - overall_start)<< std::endl;
 
-#ifdef DETAILED_TIMINGS
-    for (int i = 0; i < batch_repeats; ++i) {
-        cl_ulong ns0, ns1;
 
-        /* upload (write buffer) */
-        ev_upload[i].getProfilingInfo(CL_PROFILING_COMMAND_START, &ns0);
-        ev_upload[i].getProfilingInfo(CL_PROFILING_COMMAND_END,   &ns1);
-        hw_start_upload_ms[i] = ns_to_ms(ns0);
-        upload_ms[i]  = ns_to_ms(ns1 - ns0);
+    if(detailed_timings) {
+        for (int i = 0; i < batch_repeats; ++i) {
+            cl_ulong ns0, ns1;
 
-        /* kernel */
-        ev_kernel[i].getProfilingInfo(CL_PROFILING_COMMAND_START, &ns0);
-        ev_kernel[i].getProfilingInfo(CL_PROFILING_COMMAND_END,   &ns1);
-        hw_start_kernel_ms[i] = ns_to_ms(ns0);
-        kernel_ms[i]  = ns_to_ms(ns1 - ns0);
+            /* upload (write buffer) */
+            ev_upload[i].getProfilingInfo(CL_PROFILING_COMMAND_START, &ns0);
+            ev_upload[i].getProfilingInfo(CL_PROFILING_COMMAND_END,   &ns1);
+            hw_start_upload_ms[i] = ns_to_ms(ns0);
+            upload_ms[i]  = ns_to_ms(ns1 - ns0);
 
-        /* download (read buffer) */
-        ev_download[i].getProfilingInfo(CL_PROFILING_COMMAND_START, &ns0);
-        ev_download[i].getProfilingInfo(CL_PROFILING_COMMAND_END,   &ns1);
-        hw_start_download_ms[i] = ns_to_ms(ns0);
-        download_ms[i]= ns_to_ms(ns1 - ns0);
+            /* kernel */
+            ev_kernel[i].getProfilingInfo(CL_PROFILING_COMMAND_START, &ns0);
+            ev_kernel[i].getProfilingInfo(CL_PROFILING_COMMAND_END,   &ns1);
+            hw_start_kernel_ms[i] = ns_to_ms(ns0);
+            kernel_ms[i]  = ns_to_ms(ns1 - ns0);
+
+            /* download (read buffer) */
+            ev_download[i].getProfilingInfo(CL_PROFILING_COMMAND_START, &ns0);
+            ev_download[i].getProfilingInfo(CL_PROFILING_COMMAND_END,   &ns1);
+            hw_start_download_ms[i] = ns_to_ms(ns0);
+            download_ms[i]= ns_to_ms(ns1 - ns0);
+        }
+
+        /* ------------------ human-readable output ------------------- */
+        // calculate relative times
+        cl_ulong t0 = overall_start_event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
+        auto hw_rel = [&](double hw_start_ms){ return hw_start_ms - ns_to_ms(t0); };
+
+        for (int i = 0; i < batch_repeats; ++i) {
+            std::cout << "Start_upload_" << i << ": " << hw_rel(hw_start_upload_ms[i]) << std::endl;
+            std::cout << "Start_kernel_" << i << ": " << hw_rel(hw_start_kernel_ms[i]) << std::endl;
+            std::cout << "Start_download_" << i << ": " << hw_rel(hw_start_download_ms[i]) << std::endl;
+
+            std::cout << "Upload_time_" << i << ": " << upload_ms[i] << std::endl;
+            std::cout << "Kernel_time_" << i << ": " << kernel_ms[i] << std::endl;
+            std::cout << "Download_time_" << i << ": " << download_ms[i] << std::endl;
+        }
     }
 
-    /* ------------------ human-readable output ------------------- */
-    // calculate relative times
-    cl_ulong t0 = overall_start_event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
-    auto hw_rel = [&](double hw_start_ms){ return hw_start_ms - ns_to_ms(t0); };
-
-    for (int i = 0; i < batch_repeats; ++i) {
-        std::cout << "Start_upload_" << i << ": " << hw_rel(hw_start_upload_ms[i]) << std::endl;
-        std::cout << "Start_kernel_" << i << ": " << hw_rel(hw_start_kernel_ms[i]) << std::endl;
-        std::cout << "Start_download_" << i << ": " << hw_rel(hw_start_download_ms[i]) << std::endl;
-
-        std::cout << "Upload_time_" << i << ": " << upload_ms[i] << std::endl;
-        std::cout << "Kernel_time_" << i << ": " << kernel_ms[i] << std::endl;
-        std::cout << "Download_time_" << i << ": " << download_ms[i] << std::endl;
+    if(pinned_memory){
+        // Cleanup: Unmap pinned buffers
+        for (int i = 0; i < batch_repeats; ++i)
+            queue.enqueueUnmapMemObject(pinned_input_host_buffers[i], 
+                mapped_pinned_input_pointers[i], nullptr, nullptr);
+        for (int i = 0; i < out_buffer_count; ++i)
+            queue.enqueueUnmapMemObject(pinned_output_host_buffers[i], 
+                mapped_pinned_output_pointers[i], nullptr, nullptr);
+        queue.finish(); // Ensure unmaps complete
     }
-#endif
-
-#ifdef PINNED_MEMORY
-    // Cleanup: Unmap pinned buffers
-    for (int i = 0; i < batch_repeats; ++i)
-        queue.enqueueUnmapMemObject(pinned_input_host_buffers[i], 
-            mapped_pinned_input_pointers[i], nullptr, nullptr);
-    for (int i = 0; i < out_buffer_count; ++i)
-        queue.enqueueUnmapMemObject(pinned_output_host_buffers[i], 
-            mapped_pinned_output_pointers[i], nullptr, nullptr);
-    queue.finish(); // Ensure unmaps complete
-#endif
 }
 
 int main(int argc, char* argv[]) {
@@ -291,6 +318,9 @@ int main(int argc, char* argv[]) {
     default_argv[5] = (char*)"output_gpu.png"; // output file
     default_argv[6] = (char*)"2"; // stride
     default_argv[7] = (char*)"5"; // simulated single batch size 
+    default_argv[8] = (char*)"true"; // detailed timings
+    default_argv[9] = (char*)"true"; // pinned memory
+    default_argv[10] = (char*)"true"; // full duplex
     
     try {
         if (argc == 1) 
