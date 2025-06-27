@@ -14,6 +14,7 @@
 #include <cstring>
 #include <thread>
 #include <future>
+#include <algorithm>
 
 /* ---- project headers ---- */
 #include "utilities.hpp"
@@ -160,7 +161,10 @@ void run(char* argv[],
                           output, output_width, output_height);
     
     int total_batches = base_params.batch_repeats;
-    int num_gpus = nvidia_gpu_indices.size();
+    size_t num_gpus = nvidia_gpu_indices.size();
+
+    // limit gpu count to number of batches
+    num_gpus = std::min(num_gpus, static_cast<size_t>(total_batches));
     
     std::cout << "Distributing " << total_batches << " batches across " << num_gpus << " GPUs" << std::endl;
     
@@ -168,7 +172,7 @@ void run(char* argv[],
     std::vector<ConvParams> gpu_params;
     std::vector<std::vector<unsigned char>> gpu_outputs(num_gpus);
     
-    for (size_t i = 0; i < nvidia_gpu_indices.size(); ++i) {
+    for (size_t i = 0; i < num_gpus; ++i) {
         // Calculate batch range for this GPU
         int batch_start = (total_batches * i) / num_gpus;
         int batch_end = (total_batches * (i + 1)) / num_gpus;
@@ -188,10 +192,10 @@ void run(char* argv[],
     }
     
     // Create GPU contexts for each GPU
-    std::vector<GPUContext> gpu_contexts(nvidia_gpu_indices.size());
+    std::vector<GPUContext> gpu_contexts(num_gpus);
     
     // Do initial setup for each GPU
-    for (size_t i = 0; i < nvidia_gpu_indices.size(); ++i) {
+    for (size_t i = 0; i < num_gpus; ++i) {
         std::cout << "Setting up GPU " << nvidia_gpu_indices[i] << std::endl;
         initial_setup(gpu_contexts[i], gpu_params[i], nvidia_gpu_indices[i]);
         gpu_contexts[i].ctx_idx = i;
@@ -205,7 +209,7 @@ void run(char* argv[],
     // overall time timer start
     auto overall_start_time = std::chrono::high_resolution_clock::now();
     
-    for (size_t i = 0; i < nvidia_gpu_indices.size(); ++i) {
+    for (size_t i = 0; i < num_gpus; ++i) {
         gpu_futures.push_back(std::async(std::launch::async, [&, i]() {
             std::cout << "GPU " << nvidia_gpu_indices[i] << " starting main loop..." << std::endl;
             main_loop(gpu_contexts[i], gpu_params[i]);
@@ -218,7 +222,7 @@ void run(char* argv[],
         future.wait();
     
     // Wrap up for each GPU (collect timing data)
-    for (size_t i = 0; i < nvidia_gpu_indices.size(); ++i) {
+    for (size_t i = 0; i < num_gpus; ++i) {
         std::cout << "Wrapping up GPU " << nvidia_gpu_indices[i] << std::endl;
         wrap_up(gpu_contexts[i]);
     }
@@ -234,7 +238,7 @@ void run(char* argv[],
     // reporting the overall time
     std::cout << "Overall_time: " << total_time_ms << std::endl;
     
-    for (size_t i = 0; i < nvidia_gpu_indices.size(); ++i) {
+    for (size_t i = 0; i < num_gpus; ++i) {
         // std::cout << "Wrapping up GPU " << nvidia_gpu_indices[i] << std::endl;
         reporting_times(gpu_contexts[i], gpu_params[i]);
     }
@@ -243,7 +247,7 @@ void run(char* argv[],
     size_t single_batch_output_size = output.size() / total_batches;
     
     // Merge results from all GPUs back into the main output buffer
-    for (size_t gpu_idx = 0; gpu_idx < nvidia_gpu_indices.size(); ++gpu_idx) {
+    for (size_t gpu_idx = 0; gpu_idx < num_gpus; ++gpu_idx) {
         int batch_start = gpu_params[gpu_idx].batch_start;
         int batch_count = gpu_params[gpu_idx].gpu_batch_count;
         

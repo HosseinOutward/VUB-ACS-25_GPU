@@ -51,7 +51,7 @@ def clean_parsed(output_lines):
 
     log_numbers = 0
     pd_keys = list(parsed_data.keys())
-    while pd_keys[log_numbers].find('_0') != -1:
+    while log_numbers<len(pd_keys) and pd_keys[log_numbers].find('_0') != -1:
         log_numbers += 1
     all_batch_counts = int(len(parsed_data) / log_numbers)
 
@@ -83,7 +83,7 @@ def generate_data(
         str(stride),  # stride
         f"{single_batch_size}",  # simulated single batch size
         None,  # cpu: threads --- gpu: local mem
-        str(gpu_local_mem).lower(),  # detailed timings
+        str(gpu_detailed_timing).lower(),  # detailed timings
         str(gpu_pinned_mem).lower(),  # pinned memory
         str(gpu_full_duplex).lower(),  # full duplex
     ]
