@@ -20,7 +20,7 @@
             "cStandard": "c17",
             "cppStandard": "c++17",
             "intelliSenseMode": "windows-clang-x64",
-            "compilerPath": "D:/User Applications/Softwares/LLVM-mingw/bin/clang++.exe"
+            "compilerPath": "D:/User/Software/Cpp_files/mingw-llvm/bin/clang++.exe"
         }
     ],
     "version": 4

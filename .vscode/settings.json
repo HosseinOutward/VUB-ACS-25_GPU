@@ -1,5 +1,5 @@
 {
-    "C_Cpp.default.compilerPath": "D:\\User Applications\\Softwares\\LLVM-mingw\\bin\\clang++.exe",
+    "C_Cpp.default.compilerPath": "D:/User/Software/Cpp_files/mingw-llvm/bin/clang++.exe",
     "C_Cpp.default.includePath": [
         "${workspaceFolder}/include",
         "${workspaceFolder}/src",
