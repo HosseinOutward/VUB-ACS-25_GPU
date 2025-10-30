@@ -10,7 +10,6 @@
 #include <stdexcept>
 #include <cmath>
 #include <chrono>
-#include <direct.h>
 #include <cstring>
 #include <thread>
 #include <future>
@@ -528,7 +527,7 @@ int main(int argc, char* argv[]) {
     default_argv[4] = (char*)"output_gpu.png"; // output file
     default_argv[5] = (char*)"2"; // stride
     default_argv[6] = (char*)"5"; // simulated single batch size 
-    default_argv[7] = (char*)"true"; // cpu: threads --- gpu: local mem
+    default_argv[7] = (char*)"False"; // cpu: threads --- gpu: local mem
     default_argv[8] = (char*)"true"; // detailed timings
     default_argv[9] = (char*)"true"; // pinned memory
     default_argv[10] = (char*)"true"; // full duplex

@@ -1,0 +1,133 @@
+#pragma OPENCL EXTENSION cl_khr_fp16 : enable
+
+inline int index3d(int z, int y, int x, int height, int width) {
+    return z * (height) * (width) + y * (width) + x;
+}
+inline int index4d(int k, int z, int y, int x, int depth, int height, int width) {
+    return k * (depth) * (height) * (width) + index3d(z, y, x, height, width);
+}
+
+__kernel void kernel_app_local(
+    __global const unsigned char* in, // (w h img_c)
+    __global unsigned char* out, // (ow oh fc)
+    __global const float* filt, // (fw fh img_c fc)
+    const int stride,
+    const int in_w,
+    const int in_h,
+    const int channel_count,
+    const int filt_w,
+    const int filt_h,
+    const int filt_c,
+    const int out_w,
+    const int out_h,
+    
+    const int tile_w,
+    const int tile_h,
+    __local unsigned char* local_input_tile,
+    __local float* local_filter_k
+)
+{
+    // Global and local IDs
+    int l_x = get_local_id(0);
+    int l_y = get_local_id(1);
+    int fc = get_local_id(2);
+
+    int out_x = get_global_id(0);
+    int out_y = get_global_id(1);
+    
+    int b_idx = get_global_id(2) / filt_c;
+    
+    // ________________ load filter_k to local memory ________________
+    int local_flat_idx = (l_y * get_local_size(0)) + (l_x);
+    if (local_flat_idx < (filt_w * filt_h * filt_c * channel_count)) 
+        local_filter_k[local_flat_idx] = filt[local_flat_idx];
+    
+    // __________________ load input to local memory __________________
+    // Top-left global input coordinates for this work-group's tile
+    int tile_input_start_x = get_group_id(0) * get_local_size(0) * stride;
+    int tile_input_start_y = get_group_id(1) * get_local_size(1) * stride;
+        
+    // Load input into local memory tile (local_input_tile)
+    for (int ty = l_y; ty < tile_h; ty += get_local_size(1)) {
+        for (int tx = l_x; tx < tile_w; tx += get_local_size(0)) {
+            int current_tile_x = tile_input_start_x + tx;
+            int current_tile_y = tile_input_start_y + ty;
+
+            int global_input_idx = index4d(b_idx, 0, current_tile_y, current_tile_x, 
+                                                channel_count, in_h, in_w);
+            int tile_idx = tx + (ty*tile_w);
+            for (int c = 0; c < channel_count; ++c) {
+                local_input_tile[tile_idx] = in[global_input_idx];
+                global_input_idx += in_h * in_w;
+                tile_idx += tile_h * tile_w;
+            }
+        }
+    }
+
+    barrier(CLK_LOCAL_MEM_FENCE); // Synchronize work-items in the group
+
+    // __________________ conv cal __________________
+    if (out_x >= out_w || out_y >= out_h || fc >= filt_c) return;
+    float sum = 0.0f;
+
+    for (int in_c = 0; in_c < channel_count; ++in_c) {
+        int local_tile_x_start = out_x * stride - tile_input_start_x;
+        int local_tile_y_start = out_y * stride - tile_input_start_y;
+
+        for (int filt_y = 0; filt_y < filt_h; ++filt_y)
+            for (int filt_x = 0; filt_x < filt_w; ++filt_x) {
+                sum += 
+                    (float)local_input_tile[index3d(in_c, 
+                        local_tile_y_start+filt_y, 
+                        local_tile_x_start+filt_x, 
+                        tile_h, tile_w)]
+                    / 255.f *
+                    local_filter_k[index4d(fc, in_c, filt_y, filt_x, channel_count, filt_h, filt_w)];
+            }
+    }
+
+    out[index4d(b_idx, fc, out_y, out_x, filt_c, out_h, out_w)] = 
+        (unsigned char)clamp(sum * 255.0f, 0.0f, 255.0f);
+}
+
+
+
+
+
+
+__kernel void kernel_app(
+    __global const unsigned char* in, // (w h img_c b_size)
+    __global unsigned char* out, // (ow oh fc b_size)
+    __global const float* filt, // (fw fh img_c fc)
+    const int stride,
+    const int in_w,
+    const int in_h,
+    const int channel_count,
+    const int filt_w,
+    const int filt_h,
+    const int filt_c,
+    const int out_w,
+    const int out_h
+)
+{
+    int out_x = get_global_id(1);
+    int out_y = get_global_id(2);
+    int b_idx = get_global_id(0) / filt_c;
+    int fc = get_global_id(0) % filt_c;
+
+    float sum = 0.0f;
+
+    for (int in_c = 0; in_c < channel_count; ++in_c)
+        for (int filt_y = 0; filt_y < filt_h; ++filt_y)
+            for (int filt_x = 0; filt_x < filt_w; ++filt_x) {
+                int in_x = out_x * stride + filt_x;
+                int in_y = out_y * stride + filt_y;
+                sum += 
+                    (float)in[index4d(b_idx, in_c, in_y, in_x, channel_count, in_h, in_w)]
+                    / 255.f *
+                    filt[index4d(fc, in_c, filt_y, filt_x, channel_count, filt_h, filt_w)];
+            }
+
+    out[index4d(b_idx, fc, out_y, out_x, filt_c, out_h, out_w)] = 
+        (unsigned char)clamp(sum * 255.0f, 0.0f, 255.0f);
+}

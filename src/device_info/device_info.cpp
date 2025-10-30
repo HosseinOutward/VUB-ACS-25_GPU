@@ -3,6 +3,8 @@
 #include <iostream>
 #include <vector>
 #include <cmath>
+#include <cstring>
+#include <algorithm>
 
 int main() {
     cl_uint pcount;
@@ -67,7 +69,11 @@ int main() {
 
     cl_int err;
     cl_context ctx = clCreateContext(nullptr, 1, &dev, nullptr, nullptr, &err);
-    cl_command_queue q = clCreateCommandQueue(ctx, dev, 0, &err);
+
+    // Use the newer OpenCL 2.0+ command queue creation method
+    cl_queue_properties props[] = {0};
+    cl_command_queue q = clCreateCommandQueueWithProperties(ctx, dev, props, &err);
+
     cl_program prg = clCreateProgramWithSource(ctx, 1, &src, nullptr, &err);
     clBuildProgram(prg, 1, &dev, "", nullptr, nullptr);
     cl_kernel k = clCreateKernel(prg, "sample", &err);
@@ -95,7 +101,7 @@ int main() {
     /* derived limits */
     size_t WI_max_local = (localMem - L_static) / Ldyn_perWI;
     size_t WG_max      = maxWGSize;
-    size_t WG_size_cap  = std::min({WG_max, WG_kernel, WI_max_local});
+    size_t WG_size_cap  = std::min(std::min(WG_max, WG_kernel), WI_max_local);
 
     size_t WG_perCU     = (localMem) / (L_static + Ldyn_perWG);
     size_t WG_device    = WG_perCU * computeUnits;

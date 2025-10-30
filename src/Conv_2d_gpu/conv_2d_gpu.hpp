@@ -9,8 +9,13 @@
 #include <string>
 #include <vector>
 
-#include <windows.h>
 #include <cl2.hpp>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 std::vector<int> get_nvidia_gpu_indices() {
     std::vector<int> nvidia_gpu_indices;
@@ -73,12 +78,30 @@ inline cl::Context makeContextAndQueue(cl::CommandQueue* outQueue, cl::Device* o
 }
 
 std::string loadKernelSource() {
-    // Get the path of the current executable
+#ifdef _WIN32
+    // Get the path of the current executable (Windows)
     char buffer[MAX_PATH];
     GetModuleFileNameA(NULL, buffer, MAX_PATH);
-    
-    // Extract the filename without extension
     std::string fullPath(buffer);
+#else
+    // Get the path of the current executable (Linux/macOS)
+    char buffer[4096];
+    ssize_t len = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
+    std::string fullPath;
+    if (len != -1) {
+        buffer[len] = '\0';
+        fullPath = std::string(buffer);
+    } else {
+        // Fallback: use current working directory
+        char cwd[4096];
+        if (getcwd(cwd, sizeof(cwd)) != NULL) {
+            fullPath = std::string(cwd);
+        } else {
+            throw std::runtime_error("Unable to determine executable path");
+        }
+    }
+#endif
+    // Extract the filename without extension
     size_t lastSlash = fullPath.find_last_of("/\\");
     size_t lastDot = fullPath.find_last_of(".");
     
@@ -87,7 +110,7 @@ std::string loadKernelSource() {
     if (lastSlash != std::string::npos && lastDot != std::string::npos) {
         exec_file_name = fullPath.substr(lastSlash + 1, lastDot - lastSlash - 1);
     } else {
-        exec_file_name = "unknown";
+        exec_file_name = "conv_2d_gpu"; // default name if parsing fails
     }
 
     // if has _HTP, remove it

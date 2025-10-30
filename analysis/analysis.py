@@ -2,30 +2,74 @@
 import subprocess
 import os
 
+import numpy as np
+
 # change the working directory to the script's directory
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-def run_and_parse_conv(args_list, exe_filename="conv_2d_gpu.exe"):
-    exe_relative_path = os.path.join("..", "bin", exe_filename)
+def run_and_parse_conv(args_list, exe_filename="conv_2d_gpu"):
+    # Resolve the correct executable across platforms and use an absolute path
+    project_root = os.path.dirname(os.path.abspath(os.path.join("..", "bin")))
+    bin_dir = os.path.abspath(os.path.join(project_root, "bin"))
+
+    # Accept either with or without .exe; prefer platform-typical first
+    specified = exe_filename
+    base = specified[:-4] if specified.lower().endswith(".exe") else specified
+    with_ext = base + ".exe"
+    without_ext = base
+
+    candidates = [with_ext, without_ext] if os.name == "nt" else [without_ext, with_ext]
+
+    exe_path = None
+    for name in candidates:
+        candidate_path = os.path.join(bin_dir, name)
+        if os.path.exists(candidate_path):
+            exe_path = candidate_path
+            break
+
+    if exe_path is None:
+        raise FileNotFoundError(
+            f"Executable not found. Looked for {candidates} in {bin_dir}. "
+            f"Ensure the binaries are built and located in the bin directory."
+        )
+
+    # Ensure executable bit on POSIX if missing
+    if os.name != "nt" and not os.access(exe_path, os.X_OK):
+        try:
+            # add u+x,g+x,o+x
+            os.chmod(exe_path, os.stat(exe_path).st_mode | 0o111)
+        except Exception as e:
+            raise PermissionError(
+                f"Executable at {exe_path} is not executable and chmod failed: {e}. "
+                f"Try: chmod +x '{exe_path}'"
+            )
+
     completed_process = subprocess.run(
-        [exe_relative_path] + args_list,
+        [exe_path] + args_list,
         capture_output=True,
         text=True,
         check=False,
-        cwd=os.path.dirname(os.path.abspath(os.path.join("..", "bin")))
+        cwd=project_root,
     )
 
     if completed_process.returncode != 0:
-        raise RuntimeError(f"Error running {exe_filename}: {completed_process.stderr}")
+        raise RuntimeError(f"Error running {os.path.basename(exe_path)}: {completed_process.stderr}, {completed_process.stdout}")
 
     # find the first line that starts with "Overall_time"
-    output_lines=None
-    for i, line in enumerate(completed_process.stdout.splitlines()):
+    output_lines = None
+    stdout_lines = completed_process.stdout.splitlines()
+    for i, line in enumerate(stdout_lines):
         if line.startswith("Overall_time: "):
-            output_lines = completed_process.stdout.splitlines()[i:]
+            output_lines = stdout_lines[i:]
             break
 
-    if output_lines[-1].find(':') == -1:
+    if not output_lines:
+        raise ValueError(
+            "Did not find 'Overall_time: ' in program output. "
+            f"First 10 lines: {stdout_lines[:10]} | stderr: {completed_process.stderr[:2000]}"
+        )
+
+    if ":" not in output_lines[-1]:
         output_lines = output_lines[:-1]
 
     return output_lines
@@ -73,7 +117,8 @@ def generate_data(
         kernel_arg="kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt",
         input_arg="input_lena.png", stride=2,
         gpu_detailed_timing=None,
-        gpu_local_mem=None, gpu_pinned_mem=None, gpu_full_duplex=None
+        gpu_local_mem=None, gpu_pinned_mem=None, gpu_full_duplex=None, float16=False,
+        conv2d_file_name="conv_2d_gpu"
     ):
     args = [
         input_arg,  # input image
@@ -86,6 +131,7 @@ def generate_data(
         str(gpu_detailed_timing).lower(),  # detailed timings
         str(gpu_pinned_mem).lower(),  # pinned memory
         str(gpu_full_duplex).lower(),  # full duplex
+        str(float16).lower(),  # float16
     ]
 
     print(f'{cpu_or_gpu=}')
@@ -99,9 +145,10 @@ def generate_data(
             assert gpu_local_mem in [False,True], gpu_local_mem
             assert gpu_pinned_mem in [False,True], gpu_pinned_mem
             assert gpu_full_duplex in [False,True], gpu_full_duplex
+            assert float16 in [False,True], float16
 
             args[6] = str(cpu_threads)
-            output_lines_gpu = run_and_parse_conv(args, exe_filename="conv_2d_gpu.exe")
+            output_lines_gpu = run_and_parse_conv(args, exe_filename=conv2d_file_name)
             temp = clean_parsed(output_lines_gpu)
 
             for key, value in temp.items():
@@ -115,41 +162,46 @@ def generate_data(
                 parsed_data['cpu_overall_time']=[]
 
             args[6] = str(cpu_threads)
-            get_cpu_time = run_and_parse_conv(args, exe_filename="conv_2d_sequential.exe")
+            get_cpu_time = run_and_parse_conv(args, exe_filename="conv_2d_sequential")
             parsed_data['cpu_overall_time'] += [clean_parsed(get_cpu_time)['overall_time']]
 
     return parsed_data
 
 
 if __name__ == "__main__":
-    kernel_x_y_fc = (5, 5, 5) # x y <channels> fc
-    input_x_y_c = (1000,1000,3)
+    kernel_x_y_fc = (4, 4, 10) # x y <channels> fc
+    input_x_y_c = (1000,1000,40)
     stride=2
-    samples=2
-    single_batch_size=12
+    samples=3
+    single_batch_size=8
     batch_counts=15
 
     device = 'gpu'
     gpu_detailed_timing = True
     gpu_local_mem = True; gpu_pinned_mem = True; gpu_full_duplex = True
 
-    parsed_data = generate_data(
-        stride=stride,
-        kernel_arg="%d,%d,%d" % kernel_x_y_fc,
-        input_arg="%d,%d,%d" % input_x_y_c,
-        # kernel_arg="kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt",
-        # input_arg="input_lena.png",
+    for gpu_local_mem, gpu_pinned_mem, gpu_full_duplex in [[0,0,0],[1,0,0]]:#np.ndindex(2, 2, 2):
+        gpu_local_mem, gpu_pinned_mem, gpu_full_duplex =\
+            bool(1-gpu_local_mem), bool(1-gpu_pinned_mem), bool(1-gpu_full_duplex)
+        print(f"Running with gpu_local_mem={gpu_local_mem}, "
+              f"gpu_pinned_mem={gpu_pinned_mem}, gpu_full_duplex={gpu_full_duplex}")
+        parsed_data = generate_data(
+            stride=stride,
+            kernel_arg="%d,%d,%d" % kernel_x_y_fc,
+            input_arg="%d,%d,%d" % input_x_y_c,
+            # kernel_arg="kernel_edge_1c.txt,kernel_edge_2c.txt,kernel_edge_3c.txt",
+            # input_arg="input_lena.png",
 
-        samples=samples, single_batch_size=single_batch_size, batch_counts=batch_counts,
-        cpu_or_gpu=device, cpu_threads=0,
-        gpu_detailed_timing=gpu_detailed_timing,
-        gpu_local_mem=gpu_local_mem, gpu_pinned_mem=gpu_pinned_mem, gpu_full_duplex=gpu_full_duplex)
+            samples=samples, single_batch_size=single_batch_size, batch_counts=batch_counts,
+            cpu_or_gpu=device, cpu_threads=0,
+            gpu_detailed_timing=gpu_detailed_timing,
+            gpu_local_mem=gpu_local_mem, gpu_pinned_mem=gpu_pinned_mem, gpu_full_duplex=gpu_full_duplex)
 
-    file_name = 'report_'+device+"_lm-"+str(gpu_local_mem)+"_pm-"+str(gpu_pinned_mem)+'_fd-'+str(gpu_full_duplex)
-    file_name = file_name if device == 'gpu' else 'report_cpu'
-    print('saved to', file_name)
-    with open(f"../data/out/timings/{file_name}.txt", "w") as f:
-        f.write("{")
-        for key, value in parsed_data.items():
-            f.write("'" + key + f"': {value},\n")
-        f.write("}\n")
+        file_name = 'report_'+device+"_lm-"+str(gpu_local_mem)+"_pm-"+str(gpu_pinned_mem)+'_fd-'+str(gpu_full_duplex)
+        file_name = file_name if device == 'gpu' else 'report_cpu'
+        print('saved to', file_name)
+        with open(f"../data/out/timings/{file_name}.txt", "w") as f:
+            f.write("{")
+            for key, value in parsed_data.items():
+                f.write("'" + key + f"': {value},\n")
+            f.write("}\n")

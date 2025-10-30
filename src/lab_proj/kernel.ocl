@@ -1,9 +1,466 @@
-__kernel void kernel_app(
-    __global const float* input1,
-    __global const float* input2,
-    __global float* output
+#pragma OPENCL EXTENSION cl_khr_fp16 : enable
+
+#ifdef USE_HALF
+typedef half data_t;
+#ifdef __OPENCL_VERSION__
+typedef half4 data_t4;
+#else
+typedef half4 data_t4;
+#endif
+#else
+typedef float data_t;
+typedef float4 data_t4;
+#endif
+
+// Original kernels (single element per thread)
+typedef float data_t;
+
+__kernel void kernel_app(__global const data_t* __restrict input1,
+                         __global const data_t* __restrict input2,
+                         __global data_t* __restrict output,
+                         int repetition)
+{
+    int gid = get_global_id(0);
+
+    data_t val1 = input1[gid];
+    data_t val2 = input2[gid];
+
+    // Start with one add (1 FLOP)
+    data_t result = val1 + val2;
+
+    int remaining = repetition - 1;
+
+    // Unrolled by 16, but now we accumulate into 'result'
+    int blocks = remaining >> 4;
+    for (int i = 0; i < blocks; ++i) {
+        result = result + val2;
+        result = result + val2;
+        result = result + val2;
+        result = result + val2;
+        result = result + val2;
+        result = result + val2;
+        result = result + val2;
+        result = result + val2;
+        result = result + val2;
+        result = result + val2;
+        result = result + val2;
+        result = result + val2;
+        result = result + val2;
+        result = result + val2;
+        result = result + val2;
+        result = result + val2;  // 16 adds
+    }
+
+    // Handle tail (0..15) – also accumulate, don’t reset!
+    int tail = remaining & 15;
+    for (int i = 0; i < tail; ++i) {
+        result = result + val2;
+    }
+
+    output[gid] = result;
+}
+
+
+
+__kernel void kernel_app_FMA(
+    __global const data_t* input1,
+    __global const data_t* input2,
+    __global data_t* output,
+    int repetition
 )
 {
     int out_i = get_global_id(0);
-    output[out_i] = (input1[out_i] + input2[out_i])/2.0f;
+    
+    // Cache input values to reduce global memory accesses
+    data_t val1 = input1[out_i];
+    data_t val2 = input2[out_i];
+
+    // Perform first operation outside the loop
+    data_t result = fma(val1, val2, val1);
+
+    int remaining = repetition - 1;
+    
+    // Main loop: unroll by 16 for maximum instruction-level parallelism
+    for(int i = 0; i < (remaining >> 4); i++) {
+        result = fma(val1, val2, result);
+        result = fma(val1, val2, result);
+        result = fma(val1, val2, result);
+        result = fma(val1, val2, result);
+        result = fma(val1, val2, result);
+        result = fma(val1, val2, result);
+        result = fma(val1, val2, result);
+        result = fma(val1, val2, result);
+        result = fma(val1, val2, result);
+        result = fma(val1, val2, result);
+        result = fma(val1, val2, result);
+        result = fma(val1, val2, result);
+        result = fma(val1, val2, result);
+        result = fma(val1, val2, result);
+        result = fma(val1, val2, result);
+        result = fma(val1, val2, result);
+        result = fma(val1, val2, result);
+    }
+    
+    // Handle remaining iterations (0-15)
+    remaining &= 15; // equivalent to remaining % 16
+    for(int i = 0; i < remaining; i++) {
+        result = fma(val1, val2, val1);
+    }
+    
+    output[out_i] = result;
+}
+
+// Multi-element kernels (multiple elements per thread)
+__kernel void kernel_app_multi(
+    __global const data_t* input1,
+    __global const data_t* input2,
+    __global data_t* output,
+    int repetition,
+    int elements_per_thread,
+    int total_elements
+)
+{
+    int thread_id = get_global_id(0);
+    int start_idx = thread_id * elements_per_thread+thread_id;
+
+    // Process multiple elements per thread
+    for(int elem = 0; elem < elements_per_thread; elem++) {
+        int out_i = start_idx + elem;
+
+        // Bounds check
+        if(out_i >= total_elements) break;
+
+        // Cache input values to reduce global memory accesses
+        data_t val1 = input1[out_i];
+        data_t val2 = input2[out_i];
+
+        // Perform first operation outside the loop
+        data_t result = val1 + val2;
+
+        int remaining = repetition - 1;
+
+        // Main loop: unroll by 8 for good instruction-level parallelism
+        for(int i = 0; i < (remaining >> 3); i++) {
+            result = val1 + val2;
+            result = val1 + val2;
+            result = val1 + val2;
+            result = val1 + val2;
+            result = val1 + val2;
+            result = val1 + val2;
+            result = val1 + val2;
+            result = val1 + val2;
+        }
+
+        // Handle remaining iterations (0-7)
+        remaining &= 7; // equivalent to remaining % 8
+        for(int i = 0; i < remaining; i++) {
+            result = val1 + val2;
+        }
+
+        output[out_i] = result;
+    }
+}
+
+__kernel void kernel_app_FMA_multi(
+    __global const data_t* input1,
+    __global const data_t* input2,
+    __global data_t* output,
+    int repetition,
+    int elements_per_thread,
+    int total_elements
+)
+{
+    int thread_id = get_global_id(0);
+    int start_idx = thread_id * elements_per_thread;
+
+    // Process multiple elements per thread
+    for(int elem = 0; elem < elements_per_thread; elem++) {
+        int out_i = start_idx + elem;
+
+        // Bounds check
+        if(out_i >= total_elements) break;
+
+        // Cache input values to reduce global memory accesses
+        data_t val1 = input1[out_i];
+        data_t val2 = input2[out_i];
+
+        // Perform first operation outside the loop
+        data_t result = fma(val1, val2, val1);
+
+        int remaining = repetition - 1;
+
+        // Main loop: unroll by 8 for good instruction-level parallelism
+        for(int i = 0; i < (remaining >> 3); i++) {
+            result = fma(val1, val2, val1);
+            result = fma(val1, val2, val1);
+            result = fma(val1, val2, val1);
+            result = fma(val1, val2, val1);
+            result = fma(val1, val2, val1);
+            result = fma(val1, val2, val1);
+            result = fma(val1, val2, val1);
+            result = fma(val1, val2, val1);
+        }
+
+        // Handle remaining iterations (0-7)
+        remaining &= 7; // equivalent to remaining % 8
+        for(int i = 0; i < remaining; i++) {
+            result = fma(val1, val2, val1);
+        }
+
+        output[out_i] = result;
+    }
+}
+
+// Vectorized multi-element kernels (using vector types for better memory throughput)
+__kernel void kernel_app_multi_vec4(
+    __global const data_t* input1,
+    __global const data_t* input2,
+    __global data_t* output,
+    int repetition,
+    int elements_per_thread,
+    int total_elements
+)
+{
+    int thread_id = get_global_id(0);
+    int start_idx = thread_id * elements_per_thread;
+
+    // Process in chunks of 4 when possible
+    int vec4_chunks = elements_per_thread / 4;
+    int remaining_elements = elements_per_thread % 4;
+
+    // Process vector chunks
+    for(int chunk = 0; chunk < vec4_chunks; chunk++) {
+        int base_idx = start_idx + chunk * 4;
+
+        if(base_idx + 3 >= total_elements) break;
+
+        // Load 4 elements at once
+        data_t4 val1 = vload4(0, &input1[base_idx]);
+        data_t4 val2 = vload4(0, &input2[base_idx]);
+
+        data_t4 result = val1 + val2;
+
+        // Vectorized computation loop
+        for(int i = 1; i < repetition; i++) {
+            result = val1 + val2;
+        }
+
+        // Store 4 elements at once
+        vstore4(result, 0, &output[base_idx]);
+    }
+
+    // Handle remaining elements (scalar)
+    for(int elem = vec4_chunks * 4; elem < elements_per_thread; elem++) {
+        int out_i = start_idx + elem;
+
+        if(out_i >= total_elements) break;
+
+        data_t val1 = input1[out_i];
+        data_t val2 = input2[out_i];
+        data_t result = val1 + val2;
+
+        for(int i = 1; i < repetition; i++) {
+            result = val1 + val2;
+        }
+
+        output[out_i] = result;
+    }
+}
+
+// Inefficient multi-element kernels (demonstrating bad thread assignments)
+
+// Inefficient kernel 1: Overlapping work - threads process overlapping ranges
+__kernel void kernel_app_multi_overlap(
+    __global const data_t* input1,
+    __global const data_t* input2,
+    __global data_t* output,
+    int repetition,
+    int elements_per_thread,
+    int total_elements
+)
+{
+    int gid = get_global_id(0);
+
+    data_t val1 = input1[gid];
+    data_t val2 = input2[gid];
+
+    // Start with one add (1 FLOP)
+    data_t result = val1 + val2;
+
+
+    // choose a more random start index to create overlap
+    int start_idx = gid + (123 * gid) % total_elements;
+    int end_idx = start_idx + elements_per_thread;
+
+   // Process multiple elements per thread
+   for(int elem = start_idx; elem < end_idx; elem++) {
+       int out_i = elem;
+       if(out_i >= total_elements) break;
+
+       data_t val1 = input1[out_i];
+       data_t val2 = input2[out_i];
+       data_t result = fma(val1, val2, val1);
+
+       for(int i = 1; i < repetition; i++) {
+           result = fma(val1, val2, val1);
+       }
+
+       output[out_i] = result;
+   }
+}
+
+// Inefficient kernel 4: Redundant memory reads with no caching
+__kernel void kernel_app_multi_redundant(
+    __global const data_t* input1,
+    __global const data_t* input2,
+    __global data_t* output,
+    int repetition,
+    int elements_per_thread,
+    int total_elements
+)
+{
+    int thread_id = get_global_id(0);
+    int start_idx = thread_id * elements_per_thread;
+
+    // Process multiple elements per thread
+    for(int elem = 0; elem < elements_per_thread; elem++) {
+        int out_i = start_idx + elem;
+
+        // Bounds check
+        if(out_i >= total_elements) break;
+
+        // BAD: Don't cache values - read from global memory every time
+        data_t result = input1[out_i] + input2[out_i]; // First read
+
+        for(int i = 1; i < repetition; i++) {
+            // BAD: Read same values from global memory repeatedly
+            result = input1[out_i] + input2[out_i]; // Redundant reads
+        }
+
+        // BAD: Additional unnecessary reads just before writing
+        data_t final_val1 = input1[out_i];
+        data_t final_val2 = input2[out_i];
+        output[out_i] = final_val1 + final_val2;
+    }
+}
+
+// Inefficient FMA versions of the above kernels
+__kernel void kernel_app_FMA_multi_overlap(
+    __global const data_t* input1,
+    __global const data_t* input2,
+    __global data_t* output,
+    int repetition,
+    int elements_per_thread,
+    int total_elements
+)
+{
+    int thread_id = get_global_id(0);
+    int start_idx = thread_id; // BAD: Overlapping assignment
+
+    for(int elem = 0; elem < elements_per_thread; elem++) {
+        int out_i = start_idx + elem;
+        if(out_i >= total_elements) break;
+
+        data_t val1 = input1[out_i];
+        data_t val2 = input2[out_i];
+        data_t result = fma(val1, val2, val1);
+
+        for(int i = 1; i < repetition; i++) {
+            result = fma(val1, val2, val1);
+        }
+
+        output[out_i] = result; // Race condition
+    }
+}
+
+__kernel void kernel_app_FMA_multi_strided(
+    __global const data_t* input1,
+    __global const data_t* input2,
+    __global data_t* output,
+    int repetition,
+    int elements_per_thread,
+    int total_elements
+)
+{
+    int thread_id = get_global_id(0);
+    int total_threads = get_global_size(0);
+
+    for(int elem = 0; elem < elements_per_thread; elem++) {
+        int out_i = thread_id + elem * total_threads; // BAD: Strided access
+        if(out_i >= total_elements) break;
+
+        data_t val1 = input1[out_i];
+        data_t val2 = input2[out_i];
+        data_t result = fma(val1, val2, val1);
+
+        for(int i = 1; i < repetition; i++) {
+            result = fma(val1, val2, val1);
+        }
+
+        output[out_i] = result;
+    }
+}
+
+__kernel void kernel_app_FMA_multi_reverse(
+    __global const data_t* input1,
+    __global const data_t* input2,
+    __global data_t* output,
+    int repetition,
+    int elements_per_thread,
+    int total_elements
+)
+{
+    int thread_id = get_global_id(0);
+    int start_idx = thread_id * elements_per_thread;
+
+    for(int elem = elements_per_thread - 1; elem >= 0; elem--) { // BAD: Reverse order
+        int out_i = start_idx + elem;
+        if(out_i >= total_elements) continue;
+
+        data_t val1 = input1[out_i];
+        data_t val2 = input2[out_i];
+        data_t result = fma(val1, val2, val1);
+
+        // BAD: Branch divergence
+        if(thread_id % 2 == 0) {
+            for(int i = 1; i < repetition + 10; i++) {
+                result = fma(val1, val2, val1);
+            }
+        } else {
+            for(int i = 1; i < repetition - 10; i++) {
+                result = fma(val1, val2, val1);
+            }
+        }
+
+        output[out_i] = result;
+    }
+}
+
+__kernel void kernel_app_FMA_multi_redundant(
+    __global const data_t* input1,
+    __global const data_t* input2,
+    __global data_t* output,
+    int repetition,
+    int elements_per_thread,
+    int total_elements
+)
+{
+    int thread_id = get_global_id(0);
+    int start_idx = thread_id * elements_per_thread;
+
+    for(int elem = 0; elem < elements_per_thread; elem++) {
+        int out_i = start_idx + elem;
+        if(out_i >= total_elements) break;
+
+        // BAD: Redundant memory reads
+        data_t result = fma(input1[out_i], input2[out_i], input1[out_i]);
+
+        for(int i = 1; i < repetition; i++) {
+            result = fma(input1[out_i], input2[out_i], input1[out_i]); // Read every time
+        }
+
+        data_t final_val1 = input1[out_i]; // Unnecessary reads
+        data_t final_val2 = input2[out_i];
+        output[out_i] = fma(final_val1, final_val2, final_val1);
+    }
 }
